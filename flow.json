@@ -1,0 +1,136 @@
+{
+  "start": "entrada",
+  "timezone": "Europe/Madrid",
+  "nodes": [
+    {
+      "id": "entrada",
+      "type": "say",
+      "config": {
+        "media": "sound:hello-world"
+      }
+    },
+    {
+      "id": "menu",
+      "type": "gather",
+      "config": {
+        "media": "sound:demo-congrats",
+        "timeout": 5000
+      }
+    },
+    {
+      "id": "ana",
+      "type": "dial",
+      "config": {
+        "endpoint": "PJSIP/ana",
+        "timeout": 20
+      }
+    },
+    {
+      "id": "gracias",
+      "type": "say",
+      "config": {
+        "media": "sound:demo-thanks"
+      }
+    },
+    {
+      "id": "adios",
+      "type": "say",
+      "config": {
+        "media": "sound:vm-goodbye"
+      }
+    },
+    {
+      "id": "cerrado",
+      "type": "say",
+      "config": {
+        "media": "sound:vm-goodbye"
+      }
+    },
+    {
+      "id": "fin",
+      "type": "hangup"
+    }
+  ],
+  "edges": [
+    {
+      "from": "entrada",
+      "to": "menu",
+      "when": {
+        "and": [
+          {
+            "<=": [
+              {
+                "var": "weekday"
+              },
+              7
+            ]
+          },
+          {
+            ">=": [
+              {
+                "var": "hhmm"
+              },
+              900
+            ]
+          },
+          {
+            "<": [
+              {
+                "var": "hhmm"
+              },
+              2359
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "from": "entrada",
+      "to": "cerrado"
+    },
+    {
+      "from": "menu",
+      "to": "ana",
+      "when": {
+        "==": [
+          {
+            "var": "digit"
+          },
+          "1"
+        ]
+      }
+    },
+    {
+      "from": "menu",
+      "to": "adios"
+    },
+    {
+      "from": "ana",
+      "to": "gracias",
+      "when": {
+        "==": [
+          {
+            "var": "dial"
+          },
+          "answered"
+        ]
+      }
+    },
+    {
+      "from": "ana",
+      "to": "adios"
+    },
+    {
+      "from": "gracias",
+      "to": "fin"
+    },
+    {
+      "from": "adios",
+      "to": "fin"
+    },
+    {
+      "from": "cerrado",
+      "to": "fin"
+    }
+  ]
+}

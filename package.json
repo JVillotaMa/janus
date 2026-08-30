@@ -1,0 +1,12 @@
+{
+  "name": "janus",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "ari-client": "^2.2.0",
+    "json-logic-js": "^2.0.5"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
