@@ -4,15 +4,23 @@
   "type": "module",
   "dependencies": {
     "ari-client": "^2.2.0",
+    "better-sqlite3": "^13.0.3",
     "json-logic-js": "^2.0.5"
   },
   "scripts": {
     "start": "node src/main.ts",
     "test": "node --test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "calls": "node src/calls.ts"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.4.0",
     "typescript": "^7.0.2"
+  },
+  "pnpm": {
+    "ignoredBuiltDependencies": [
+      "better-sqlite3"
+    ]
   }
 }

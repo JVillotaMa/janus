@@ -135,14 +135,17 @@ src/
   nodes.ts       NODES: say, gather, dial, hangup
   interpreter.ts run, nextNode
   server.ts      la API HTTP del flujo
+  store.ts       persistencia de la traza (SQLite)
+  calls.ts       script: imprime las ultimas llamadas
   main.ts        entrypoint: conecta ARI y ata las piezas
 flow.json        el grafo, a mano
-tests/           53 tests, deterministas, sin Asterisk   -> pnpm test
+tests/           63 tests, deterministas, sin Asterisk   -> pnpm test
   fake-channel.js    dobles de canal, bridge y cliente ARI
   interpreter.test.js  bucle, aristas, horario, cancelacion
   nodes.test.js        say / gather / hangup, con timers simulados
   dial.test.js         originate, bridge, causas Q.931, handback
   time.test.js         zonas IANA, DST, weekday ISO
+  store.test.js        guardado y lectura, con base en memoria
 ui/              editor React Flow (Vite)   -> cd ui && npm run dev
 janus-lab/etc    config de Asterisk (montada en el contenedor)
 janus-lab/sounds sonidos core, montados en /var/lib/asterisk/sounds
@@ -171,8 +174,20 @@ de versiones inmutables, gratis.
 bloquea el script de build de esbuild y la UI no arranca. No los unifiques sin
 resolver eso antes.
 
-Sin BBDD: el grafo es un fichero y la traza va a stdout. `call_steps` y el
-versionado del README todavia no existen.
+La traza se guarda en `janus.db` (SQLite via `better-sqlite3`) al terminar cada
+llamada, con su `outcome`: `completed`, `hungup` o `error`. Se lee con
+`pnpm calls`. Es un fichero, no hay servidor ni contenedor que mantener.
+
+`better-sqlite3` trae binarios precompilados, asi que no hace falta compilador.
+pnpm bloquea su script de instalacion; ya esta resuelto con
+`pnpm approve-builds better-sqlite3`, que deja `ignoredBuiltDependencies` en
+package.json. Si vuelve a saltar, ese es el comando (el nombre va como argumento,
+si no es interactivo).
+
+Se descarto `node:sqlite`: hace lo mismo sin dependencias, pero es experimental.
+
+El grafo sigue siendo un fichero. El versionado del README todavia no existe, asi
+que `calls` no guarda con que version entro la llamada.
 
 **TypeScript sin build.** Node 24 ejecuta `.ts` directamente por borrado de
 tipos, asi que no hay `tsc` ni bundler en el bucle de desarrollo:
