@@ -5,9 +5,9 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { callVars } from '../engine.js';
+import { callVars } from '../src/time.ts';
 
-const at = (iso, tz) => callVars(new Date(iso), tz);
+const at = (iso: string, tz: string) => callVars(new Date(iso), tz);
 
 test('el mismo instante UTC da hora distinta según el horario de verano', () => {
   assert.equal(at('2026-01-15T18:30:00Z', 'Europe/Madrid').hhmm, 1930, 'invierno, +1');

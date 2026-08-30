@@ -128,7 +128,14 @@ Funciona el bucle mínimo: llamada real entrando por Asterisk, interpretada por
 `engine.js` sobre el grafo de `flow.json`.
 
 ```
-engine.js        interprete + nodos + callVars + conexion ARI
+src/
+  types.ts       tipos compartidos. Solo declaraciones, se importa con `import type`
+  cancel.ts      cancelable + Hungup. El primitivo del que depende todo lo demas
+  time.ts        callVars
+  nodes.ts       NODES: say, gather, dial, hangup
+  interpreter.ts run, nextNode
+  server.ts      la API HTTP del flujo
+  main.ts        entrypoint: conecta ARI y ata las piezas
 flow.json        el grafo, a mano
 tests/           53 tests, deterministas, sin Asterisk   -> pnpm test
   fake-channel.js    dobles de canal, bridge y cliente ARI
@@ -153,7 +160,9 @@ El enrutado por horario NO es un tipo de nodo: `callVars` siembra `hhmm`,
 comparan con jsonlogic normal. La zona sale de `flow.timezone` (IANA, nunca un
 offset) y se calcula una sola vez desde `ctx.startedAt`, no en cada nodo.
 
-El motor sirve `GET/PUT http://localhost:3000/api/flow`. Un PUT reescribe
+El motor sirve `GET/PUT http://localhost:3000/api/flow` con `node:http`.
+ponytail: son dos rutas. Cuando haya que servir la UI compilada o pasen de
+media docena, migrar a Express o Hono son diez lineas — hasta entonces no. Un PUT reescribe
 `flow.json` y cambia el flujo en caliente: las llamadas en curso conservan el
 que tenian al entrar (`flowAtStart`), las nuevas cogen el nuevo. Es el invariante
 de versiones inmutables, gratis.
@@ -165,6 +174,27 @@ resolver eso antes.
 Sin BBDD: el grafo es un fichero y la traza va a stdout. `call_steps` y el
 versionado del README todavia no existen.
 
+**TypeScript sin build.** Node 24 ejecuta `.ts` directamente por borrado de
+tipos, asi que no hay `tsc` ni bundler en el bucle de desarrollo:
+
+```bash
+pnpm start       # node src/main.ts
+pnpm test        # node --test, encuentra los .ts solo
+pnpm typecheck   # tsc --noEmit
+```
+
+Consecuencias del borrado de tipos, y no son opcionales:
+
+- Importar tipos SIEMPRE con `import type`. Un import normal de `types.ts`
+  fallaria en runtime: ese modulo no exporta nada ejecutable.
+- Las importaciones llevan extension `.ts` explicita.
+- Nada de `enum`, `namespace` ni propiedades de parametro en el constructor:
+  no son borrables. `erasableSyntaxOnly` en tsconfig lo caza al escribirlo.
+
+Los tipos de ARI (`Channel`, `AriClient`, `Bridge`) son **estructurales** y
+describen solo lo que el motor usa. Por eso los dobles de `tests/` encajan sin
+heredar de nada ni castear.
+
 Levantar el laboratorio:
 
 ```bash
@@ -172,5 +202,5 @@ docker run -d --rm --name asterisk --network host \
   -v $PWD/janus-lab/etc:/etc/asterisk \
   -v $PWD/janus-lab/sounds:/var/lib/asterisk/sounds \
   andrius/asterisk
-node engine.js          # y marcar 100 desde el softphone
+pnpm start              # y marcar 100 desde el softphone
 ```

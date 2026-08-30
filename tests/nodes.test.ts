@@ -5,11 +5,14 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { NODES, Hungup } from '../engine.js';
-import { FakeChannel, tick } from './fake-channel.js';
+import { NODES } from '../src/nodes.ts';
+import { Hungup } from '../src/cancel.ts';
+import { FakeChannel, FakeClient, tick } from './fake-channel.ts';
+import type { Ctx } from '../src/types.ts';
 
-const newCtx = (signal = new AbortController().signal) => ({
+const newCtx = (signal: AbortSignal = new AbortController().signal): Ctx => ({
   signal,
+  client: new FakeClient(),
   startedAt: new Date('2026-08-30T10:00:00Z'),
   vars: {},
   trace: [],
@@ -19,7 +22,7 @@ const newCtx = (signal = new AbortController().signal) => ({
 
 test('say reproduce el media que le pasan', async () => {
   const channel = new FakeChannel();
-  const running = NODES.say(channel, { media: 'sound:hola' }, newCtx());
+  const running = NODES.say!(channel, { media: 'sound:hola' }, newCtx());
   await tick();
 
   assert.deepEqual(channel.played, ['sound:hola']);
@@ -30,7 +33,7 @@ test('say reproduce el media que le pasan', async () => {
 test('say no resuelve mientras el audio sigue sonando', async () => {
   const channel = new FakeChannel();
   let acabado = false;
-  const running = NODES.say(channel, { media: 'sound:hola' }, newCtx())
+  const running = NODES.say!(channel, { media: 'sound:hola' }, newCtx())
     .then(() => { acabado = true; });
 
   await tick();
@@ -45,7 +48,7 @@ test('say no resuelve mientras el audio sigue sonando', async () => {
 test('say rechaza con Hungup si cuelgan durante el audio', async () => {
   const channel = new FakeChannel();
   const controller = new AbortController();
-  const running = NODES.say(channel, { media: 'sound:hola' }, newCtx(controller.signal));
+  const running = NODES.say!(channel, { media: 'sound:hola' }, newCtx(controller.signal));
 
   await tick();
   controller.abort();
@@ -56,7 +59,7 @@ test('say rechaza con Hungup si cuelgan durante el audio', async () => {
 test('say no deja listeners en el playback al cancelar', async () => {
   const channel = new FakeChannel();
   const controller = new AbortController();
-  const running = NODES.say(channel, { media: 'sound:hola' }, newCtx(controller.signal));
+  const running = NODES.say!(channel, { media: 'sound:hola' }, newCtx(controller.signal));
 
   await tick();
   controller.abort();
@@ -67,7 +70,7 @@ test('say no deja listeners en el playback al cancelar', async () => {
 
 test('say no deja listeners en el playback al terminar bien', async () => {
   const channel = new FakeChannel();
-  const running = NODES.say(channel, { media: 'sound:hola' }, newCtx());
+  const running = NODES.say!(channel, { media: 'sound:hola' }, newCtx());
 
   await tick();
   channel.playing.finish();
@@ -82,7 +85,7 @@ test('say rechaza de inmediato si ya habían colgado', async () => {
   controller.abort();
 
   await assert.rejects(
-    NODES.say(channel, { media: 'sound:hola' }, newCtx(controller.signal)),
+    NODES.say!(channel, { media: 'sound:hola' }, newCtx(controller.signal)),
     (err) => err instanceof Hungup,
   );
 });
@@ -91,7 +94,7 @@ test('say rechaza de inmediato si ya habían colgado', async () => {
 
 test('gather sin media no reproduce nada y escucha directamente', async () => {
   const channel = new FakeChannel();
-  const running = NODES.gather(channel, {}, newCtx());
+  const running = NODES.gather!(channel, {}, newCtx());
   await tick();
 
   assert.deepEqual(channel.played, []);
@@ -103,7 +106,7 @@ test('gather sin media no reproduce nada y escucha directamente', async () => {
 
 test('gather reproduce el prompt entero antes de escuchar (sin barge-in)', async () => {
   const channel = new FakeChannel();
-  const running = NODES.gather(channel, { media: 'sound:menu' }, newCtx());
+  const running = NODES.gather!(channel, { media: 'sound:menu' }, newCtx());
   await tick();
 
   assert.deepEqual(channel.played, ['sound:menu']);
@@ -119,7 +122,7 @@ test('gather reproduce el prompt entero antes de escuchar (sin barge-in)', async
 
 test('gather devuelve el primer dígito e ignora los siguientes', async () => {
   const channel = new FakeChannel();
-  const running = NODES.gather(channel, {}, newCtx());
+  const running = NODES.gather!(channel, {}, newCtx());
   await tick();
 
   channel.pressDigit('1');
@@ -131,7 +134,7 @@ test('gather devuelve el primer dígito e ignora los siguientes', async () => {
 test('gather devuelve null cuando vence el timeout', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const channel = new FakeChannel();
-  const running = NODES.gather(channel, { timeout: 5000 }, newCtx());
+  const running = NODES.gather!(channel, { timeout: 5000 }, newCtx());
   await tick();
 
   t.mock.timers.tick(4999);
@@ -145,7 +148,7 @@ test('gather devuelve null cuando vence el timeout', async (t) => {
 test('gather usa 5000 ms de timeout por defecto', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const channel = new FakeChannel();
-  const running = NODES.gather(channel, {}, newCtx());
+  const running = NODES.gather!(channel, {}, newCtx());
   await tick();
 
   t.mock.timers.tick(5000);
@@ -155,7 +158,7 @@ test('gather usa 5000 ms de timeout por defecto', async (t) => {
 test('gather rechaza si cuelgan mientras espera el dígito', async () => {
   const channel = new FakeChannel();
   const controller = new AbortController();
-  const running = NODES.gather(channel, {}, newCtx(controller.signal));
+  const running = NODES.gather!(channel, {}, newCtx(controller.signal));
 
   await tick();
   controller.abort();
@@ -166,7 +169,7 @@ test('gather rechaza si cuelgan mientras espera el dígito', async () => {
 test('gather rechaza si cuelgan durante el prompt', async () => {
   const channel = new FakeChannel();
   const controller = new AbortController();
-  const running = NODES.gather(channel, { media: 'sound:menu' }, newCtx(controller.signal));
+  const running = NODES.gather!(channel, { media: 'sound:menu' }, newCtx(controller.signal));
 
   await tick();
   controller.abort();
@@ -177,7 +180,7 @@ test('gather rechaza si cuelgan durante el prompt', async () => {
 
 test('gather no deja listeners de DTMF tras devolver un dígito', async () => {
   const channel = new FakeChannel();
-  const running = NODES.gather(channel, {}, newCtx());
+  const running = NODES.gather!(channel, {}, newCtx());
   await tick();
 
   channel.pressDigit('3');
@@ -189,7 +192,7 @@ test('gather no deja listeners de DTMF tras devolver un dígito', async () => {
 test('gather no deja listeners de DTMF al cancelar', async () => {
   const channel = new FakeChannel();
   const controller = new AbortController();
-  const running = NODES.gather(channel, {}, newCtx(controller.signal));
+  const running = NODES.gather!(channel, {}, newCtx(controller.signal));
 
   await tick();
   assert.equal(channel.dtmfListeners, 1);
@@ -203,7 +206,7 @@ test('gather no deja listeners de DTMF al cancelar', async () => {
 test('gather no deja listeners de DTMF al vencer el timeout', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const channel = new FakeChannel();
-  const running = NODES.gather(channel, { timeout: 1000 }, newCtx());
+  const running = NODES.gather!(channel, { timeout: 1000 }, newCtx());
   await tick();
 
   t.mock.timers.tick(1000);
@@ -218,7 +221,7 @@ test('hangup cuelga el canal', async () => {
   const channel = new FakeChannel();
   assert.equal(channel.hungUp, false);
 
-  await NODES.hangup(channel);
+  await NODES.hangup!(channel, {}, newCtx());
 
   assert.equal(channel.hungUp, true);
 });

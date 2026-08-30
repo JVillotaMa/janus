@@ -7,6 +7,12 @@
     "json-logic-js": "^2.0.5"
   },
   "scripts": {
-    "test": "node --test"
+    "start": "node src/main.ts",
+    "test": "node --test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "typescript": "^7.0.2"
   }
 }

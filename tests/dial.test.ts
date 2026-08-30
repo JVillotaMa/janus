@@ -5,10 +5,13 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { NODES, DIALED, Hungup, run } from '../engine.js';
-import { FakeChannel, FakeClient, tick } from './fake-channel.js';
+import { NODES, DIALED } from '../src/nodes.ts';
+import { Hungup } from '../src/cancel.ts';
+import { run } from '../src/interpreter.ts';
+import { FakeChannel, FakeClient, tick } from './fake-channel.ts';
+import type { Ctx, Flow } from '../src/types.ts';
 
-const newCtx = (client, signal = new AbortController().signal) => ({
+const newCtx = (client: FakeClient, signal: AbortSignal = new AbortController().signal): Ctx => ({
   signal,
   client,
   startedAt: new Date('2026-08-31T10:00:00Z'),
@@ -16,15 +19,15 @@ const newCtx = (client, signal = new AbortController().signal) => ({
   trace: [],
 });
 
-const path = (ctx) => ctx.trace.map((step) => step.node);
+const path = (ctx: Ctx) => ctx.trace.map((step) => step.node);
 
 test('origina hacia el endpoint configurado y marca la pata saliente', async () => {
   const client = new FakeClient();
-  const running = NODES.dial(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client));
+  const running = NODES.dial!(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client));
   await tick();
 
-  assert.equal(client.originated[0].endpoint, 'PJSIP/ana');
-  assert.equal(client.originated[0].appArgs, DIALED, 'sin la marca, el handler la trata como llamada nueva');
+  assert.equal(client.originated[0]!.endpoint, 'PJSIP/ana');
+  assert.equal(client.originated[0]!.appArgs, DIALED, 'sin la marca, el handler la trata como llamada nueva');
 
   client.destroys(client.lastOutbound, 19);
   await running;
@@ -32,10 +35,10 @@ test('origina hacia el endpoint configurado y marca la pata saliente', async () 
 
 test('usa 30 segundos de timeout por defecto', async () => {
   const client = new FakeClient();
-  const running = NODES.dial(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client));
+  const running = NODES.dial!(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client));
   await tick();
 
-  assert.equal(client.originated[0].timeout, 30);
+  assert.equal(client.originated[0]!.timeout, 30);
 
   client.destroys(client.lastOutbound, 19);
   await running;
@@ -44,7 +47,7 @@ test('usa 30 segundos de timeout por defecto', async () => {
 test('si contesta, puentea las dos patas', async () => {
   const client = new FakeClient();
   const caller = new FakeChannel('caller');
-  const running = NODES.dial(caller, { endpoint: 'PJSIP/ana' }, newCtx(client));
+  const running = NODES.dial!(caller, { endpoint: 'PJSIP/ana' }, newCtx(client));
   await tick();
 
   client.answers();
@@ -58,7 +61,7 @@ test('si contesta, puentea las dos patas', async () => {
 
 test('al colgar el llamado se deshace el bridge y el nodo devuelve answered', async () => {
   const client = new FakeClient();
-  const running = NODES.dial(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client));
+  const running = NODES.dial!(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client));
   await tick();
 
   client.answers();
@@ -71,18 +74,18 @@ test('al colgar el llamado se deshace el bridge y el nodo devuelve answered', as
 
 test('comunicando devuelve busy y no llega a crear bridge', async () => {
   const client = new FakeClient();
-  const running = NODES.dial(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client));
+  const running = NODES.dial!(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client));
   await tick();
 
   client.destroys(client.lastOutbound, 17);
 
   assert.deepEqual(await running, { dial: 'busy' });
-  assert.equal(client.lastBridge, null);
+  assert.equal(client.createdBridges.length, 0);
 });
 
 test('sin respuesta devuelve noanswer', async () => {
   const client = new FakeClient();
-  const running = NODES.dial(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client));
+  const running = NODES.dial!(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client));
   await tick();
 
   client.destroys(client.lastOutbound, 19);
@@ -92,7 +95,7 @@ test('sin respuesta devuelve noanswer', async () => {
 
 test('una causa desconocida cae en failed', async () => {
   const client = new FakeClient();
-  const running = NODES.dial(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client));
+  const running = NODES.dial!(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client));
   await tick();
 
   client.destroys(client.lastOutbound, 34);
@@ -105,7 +108,7 @@ test('una causa desconocida cae en failed', async () => {
 test('si cuelgan mientras suena, se cuelga también la pata saliente', async () => {
   const client = new FakeClient();
   const controller = new AbortController();
-  const running = NODES.dial(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client, controller.signal));
+  const running = NODES.dial!(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client, controller.signal));
   await tick();
 
   controller.abort();
@@ -117,7 +120,7 @@ test('si cuelgan mientras suena, se cuelga también la pata saliente', async () 
 test('si cuelgan durante la conversación, se destruye el bridge y se cuelga la saliente', async () => {
   const client = new FakeClient();
   const controller = new AbortController();
-  const running = NODES.dial(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client, controller.signal));
+  const running = NODES.dial!(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client, controller.signal));
   await tick();
 
   client.answers();
@@ -131,7 +134,7 @@ test('si cuelgan durante la conversación, se destruye el bridge y se cuelga la 
 
 test('no deja listeners en el cliente ARI', async () => {
   const client = new FakeClient();
-  const running = NODES.dial(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client));
+  const running = NODES.dial!(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client));
   await tick();
 
   client.answers();
@@ -145,7 +148,7 @@ test('no deja listeners en el cliente ARI', async () => {
 test('no deja listeners en el cliente ARI al cancelar', async () => {
   const client = new FakeClient();
   const controller = new AbortController();
-  const running = NODES.dial(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client, controller.signal));
+  const running = NODES.dial!(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client, controller.signal));
   await tick();
 
   controller.abort();

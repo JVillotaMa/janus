@@ -5,26 +5,36 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { run, nextNode, cancelable, callVars, Hungup } from '../engine.js';
+import { run, nextNode } from '../src/interpreter.ts';
+import { cancelable, Hungup } from '../src/cancel.ts';
+import { callVars } from '../src/time.ts';
+import { FakeChannel, FakeClient } from './fake-channel.ts';
+import type { Ctx, Flow, Nodes } from '../src/types.ts';
 
-const newCtx = (signal = new AbortController().signal, vars = {}) => ({
+const newCtx = (
+  signal: AbortSignal = new AbortController().signal,
+  vars: Record<string, unknown> = {},
+): Ctx => ({
   signal,
+  client: new FakeClient(),
   startedAt: new Date('2026-08-31T10:00:00Z'),
   vars,
   trace: [],
 });
 
-/** @return {string[]} Solo los ids del recorrido, sin timestamps. */
-const path = (ctx) => ctx.trace.map((step) => step.node);
+const anyChannel = () => new FakeChannel();
 
-const stubs = {
+/** @return {string[]} Solo los ids del recorrido, sin timestamps. */
+const path = (ctx: Ctx) => ctx.trace.map((step) => step.node);
+
+const stubs: Nodes = {
   async press1() { return { digit: '1' }; },
   async press9() { return { digit: '9' }; },
   async hangup() {},
   async noop() {},
 };
 
-const menuWith = (type) => ({
+const menuWith = (type: string): Flow => ({
   start: 'menu',
   nodes: [
     { id: 'menu', type },
@@ -41,33 +51,33 @@ const menuWith = (type) => ({
 
 test('la arista condicional gana cuando casa', async () => {
   const ctx = newCtx();
-  await run(null, menuWith('press1'), ctx, stubs);
+  await run(anyChannel(), menuWith('press1'), ctx, stubs);
   assert.deepEqual(path(ctx), ['menu', 'si']);
 });
 
 test('cae a la arista sin condición cuando no casa', async () => {
   const ctx = newCtx();
-  await run(null, menuWith('press9'), ctx, stubs);
+  await run(anyChannel(), menuWith('press9'), ctx, stubs);
   assert.deepEqual(path(ctx), ['menu', 'no']);
 });
 
 test('un callejón sin salida se marca en la traza', async () => {
   const ctx = newCtx();
   const flow = { start: 'a', nodes: [{ id: 'a', type: 'press1' }], edges: [] };
-  await run(null, flow, ctx, stubs);
+  await run(anyChannel(), flow, ctx, stubs);
   assert.deepEqual(path(ctx), ['a', '!dead-end']);
 });
 
 test('un nodo hangup termina sin marcar callejón', async () => {
   const ctx = newCtx();
   const flow = { start: 'a', nodes: [{ id: 'a', type: 'hangup' }], edges: [] };
-  await run(null, flow, ctx, stubs);
+  await run(anyChannel(), flow, ctx, stubs);
   assert.deepEqual(path(ctx), ['a']);
 });
 
 test('cada paso de la traza lleva su hora de entrada en UTC', async () => {
   const ctx = newCtx();
-  await run(null, menuWith('press1'), ctx, stubs);
+  await run(anyChannel(), menuWith('press1'), ctx, stubs);
 
   for (const step of ctx.trace) {
     assert.match(step.at, /^\d{4}-\d{2}-\d{2}T.*Z$/, 'ISO en UTC');
@@ -76,13 +86,14 @@ test('cada paso de la traza lleva su hora de entrada en UTC', async () => {
 
 test('las variables que produce un nodo quedan disponibles para las aristas', async () => {
   const ctx = newCtx();
-  await run(null, menuWith('press1'), ctx, stubs);
+  await run(anyChannel(), menuWith('press1'), ctx, stubs);
   assert.equal(ctx.vars.digit, '1');
 });
 
 test('nextNode devuelve null cuando ninguna arista casa', () => {
-  const flow = {
-    nodes: [{ id: 'a' }, { id: 'b' }],
+  const flow: Flow = {
+    start: 'a',
+    nodes: [{ id: 'a', type: 'noop' }, { id: 'b', type: 'noop' }],
     edges: [{ from: 'a', to: 'b', when: { '==': [{ var: 'digit' }, '5'] } }],
   };
   assert.equal(nextNode(flow, 'a', { digit: '1' }), null);
@@ -109,11 +120,11 @@ const porHorario = {
   ],
 };
 
-const alas = async (iso) => {
+const alas = async (iso: string) => {
   const startedAt = new Date(iso);
   const ctx = newCtx(undefined, callVars(startedAt, 'Europe/Madrid'));
   ctx.startedAt = startedAt;
-  await run(null, porHorario, ctx, stubs);
+  await run(anyChannel(), porHorario, ctx, stubs);
   return path(ctx);
 };
 
@@ -134,19 +145,19 @@ test('la hora se fija al entrar y no se recalcula por el camino', async () => {
   const ctx = newCtx(undefined, callVars(startedAt, 'Europe/Madrid'));
   ctx.startedAt = startedAt;
 
-  const lentos = {
+  const lentos: Nodes = {
     // un nodo que tarda lo suyo: una conversación real dura minutos
-    async tarda() { await new Promise((r) => setTimeout(r, 5)); },
+    async tarda() { await new Promise((resolve) => setTimeout(resolve, 5)); },
     async hangup() {},
     async noop() {},
   };
-  const flow = {
+  const flow: Flow = {
     start: 'espera',
     nodes: [{ id: 'espera', type: 'tarda' }, ...porHorario.nodes],
     edges: [{ from: 'espera', to: 'entrada' }, ...porHorario.edges],
   };
 
-  await run(null, flow, ctx, lentos);
+  await run(anyChannel(), flow, ctx, lentos);
   assert.deepEqual(path(ctx), ['espera', 'entrada', 'tarde'], 'sigue siendo la de las 20:59');
 });
 
@@ -156,8 +167,10 @@ test('el cuelgue corta un await pendiente y detiene el bucle', async () => {
   const controller = new AbortController();
   const ctx = newCtx(controller.signal);
 
-  const slow = {
-    async wait(_channel, _config, ctx) { return cancelable(ctx.signal, () => () => {}); },
+  const slow: Nodes = {
+    async wait(_channel, _config, ctx) {
+      return cancelable<void>(ctx.signal, () => () => {});
+    },
     async never() { assert.fail('no debe ejecutarse después del cuelgue'); },
   };
   const flow = {
@@ -167,7 +180,7 @@ test('el cuelgue corta un await pendiente y detiene el bucle', async () => {
   };
 
   setTimeout(() => controller.abort(), 10);
-  await assert.rejects(run(null, flow, ctx, slow), (err) => err instanceof Hungup);
+  await assert.rejects(run(anyChannel(), flow, ctx, slow), (err) => err instanceof Hungup);
   assert.deepEqual(path(ctx), ['a'], 'no debe avanzar al siguiente nodo');
 });
 

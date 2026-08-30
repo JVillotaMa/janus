@@ -15,17 +15,19 @@ export class FakePlayback extends EventEmitter {
 
 /** Canal de mentira. */
 export class FakeChannel extends EventEmitter {
+  id: string;
+  played: string[] = [];
+  playbacks: FakePlayback[] = [];
+  hungUp = false;
+
   constructor(id = 'caller') {
     super();
     this.id = id;
-    /** @type {string[]} Medias reproducidos, en orden. */
-    this.played = [];
-    /** @type {FakePlayback[]} */
-    this.playbacks = [];
-    this.hungUp = false;
   }
 
-  async play({ media }) {
+  async answer() {}
+
+  async play({ media }: { media: string }) {
     this.played.push(media);
     const playback = new FakePlayback();
     this.playbacks.push(playback);
@@ -36,36 +38,41 @@ export class FakeChannel extends EventEmitter {
     this.hungUp = true;
   }
 
-  /** @return {?FakePlayback} El playback en curso. */
-  get playing() {
-    return this.playbacks.at(-1) ?? null;
+  /** El playback en curso. Lanza si no hay: pedirlo sin haber reproducido nada
+   *  es un fallo del test. */
+  get playing(): FakePlayback {
+    const last = this.playbacks.at(-1);
+    if (!last) throw new Error('no se ha reproducido nada');
+    return last;
   }
 
   /** Simula que alguien pulsa una tecla. */
-  pressDigit(digit) {
+  pressDigit(digit: string) {
     this.emit('ChannelDtmfReceived', { digit });
   }
 
-  /** @return {number} Listeners de DTMF vivos. Debe volver a 0 al terminar. */
-  get dtmfListeners() {
+  /** Listeners de DTMF vivos. Debe volver a 0 al terminar. */
+  get dtmfListeners(): number {
     return this.listenerCount('ChannelDtmfReceived');
   }
 }
 
 /** Cede el control para que corran los microtasks pendientes. */
-export const tick = () => new Promise(setImmediate);
+export const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
 
 /** Bridge de mentira. */
 export class FakeBridge {
-  constructor(id) {
+  id: string;
+  channels: string[] = [];
+  destroyed = false;
+
+  constructor(id: string) {
     this.id = id;
-    /** @type {string[]} Ids de los canales metidos. */
-    this.channels = [];
-    this.destroyed = false;
   }
 
-  async addChannel({ channel }) {
-    this.channels.push(...[].concat(channel));
+  async addChannel({ channel }: { channel: string[] }) {
+    this.channels.push(...channel);
   }
 
   async destroy() {
@@ -75,17 +82,16 @@ export class FakeBridge {
 
 /** Cliente ARI de mentira: origina canales y crea bridges bajo control del test. */
 export class FakeClient extends EventEmitter {
+  originated: Record<string, unknown>[] = [];
+  outbound: FakeChannel[] = [];
+  createdBridges: FakeBridge[] = [];
+  channels: { originate(o: Record<string, unknown>): Promise<FakeChannel> };
+  bridges: { create(o?: Record<string, unknown>): Promise<FakeBridge> };
+
   constructor() {
     super();
-    /** @type {Object[]} Opciones con las que se llamó a originate. */
-    this.originated = [];
-    /** @type {FakeChannel[]} */
-    this.outbound = [];
-    /** @type {FakeBridge[]} */
-    this.createdBridges = [];
-
     this.channels = {
-      originate: async (options) => {
+      originate: async (options: Record<string, unknown>) => {
         this.originated.push(options);
         const channel = new FakeChannel(`out-${this.outbound.length + 1}`);
         this.outbound.push(channel);
@@ -102,26 +108,32 @@ export class FakeClient extends EventEmitter {
     };
   }
 
-  get lastOutbound() {
-    return this.outbound.at(-1) ?? null;
+  /** Lanza si no hay: pedirlo sin haber originado nada es un fallo del test. */
+  get lastOutbound(): FakeChannel {
+    const last = this.outbound.at(-1);
+    if (!last) throw new Error('no se ha originado ningún canal saliente');
+    return last;
   }
 
-  get lastBridge() {
-    return this.createdBridges.at(-1) ?? null;
+  /** Lanza si no hay: para comprobar que NO se creó, mira `createdBridges`. */
+  get lastBridge(): FakeBridge {
+    const last = this.createdBridges.at(-1);
+    if (!last) throw new Error('no se ha creado ningún bridge');
+    return last;
   }
 
   /** El saliente contesta y entra en Stasis. */
-  answers(channel = this.lastOutbound) {
+  answers(channel: FakeChannel = this.lastOutbound) {
     this.emit('StasisStart', { args: ['dialed'] }, { id: channel.id });
   }
 
   /** El saliente desaparece con una causa Q.931 (16 normal, 17 ocupado, 19 no contesta). */
-  destroys(channel = this.lastOutbound, cause = 16) {
+  destroys(channel: FakeChannel = this.lastOutbound, cause = 16) {
     this.emit('ChannelDestroyed', { cause }, { id: channel.id });
   }
 
-  /** @return {number} Listeners vivos en total. Debe volver a 0. */
-  get liveListeners() {
+  /** Listeners vivos en total. Debe volver a 0. */
+  get liveListeners(): number {
     return this.eventNames().reduce((total, name) => total + this.listenerCount(name), 0);
   }
 }
