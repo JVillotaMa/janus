@@ -16,6 +16,16 @@ Lee `README.md` antes de tocar nada. No dupliques su contenido aquí.
 
 ---
 
+## Git: no es tuyo
+
+**Los commits y los push los hace SIEMPRE el dueño del repo.** Nunca ejecutes
+`git commit` ni `git push`, ni siquiera al terminar un cambio que funciona y
+tiene sus tests en verde. Deja el arbol sucio y di que esta listo para revisar.
+
+`git add`, `git status`, `git diff` y `git log` si, son de lectura o preparan.
+
+---
+
 ## Invariantes
 
 No negociables. Si un cambio los rompe, el cambio está mal:
@@ -177,6 +187,11 @@ resolver eso antes.
 La traza se guarda en `janus.db` (SQLite via `better-sqlite3`) al terminar cada
 llamada, con su `outcome`: `completed`, `hungup` o `error`. Se lee con
 `pnpm calls`. Es un fichero, no hay servidor ni contenedor que mantener.
+
+**No borres `janus.db` sin mirar antes si hay un motor corriendo** (`ss -ltn |
+grep 3000`). SQLite mantiene abierto el inode aunque borres el fichero, asi que
+el motor sigue escribiendo en algo que ya no existe y se pierden llamadas reales
+sin ningun error. Son datos del dueno del repo, no material de pruebas.
 
 `better-sqlite3` trae binarios precompilados, asi que no hace falta compilador.
 pnpm bloquea su script de instalacion; ya esta resuelto con

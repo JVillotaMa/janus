@@ -9,7 +9,7 @@ import { readFile } from 'node:fs/promises';
 import { Hungup } from './cancel.ts';
 import { run } from './interpreter.ts';
 import { APP, DIALED } from './nodes.ts';
-import { serveFlow } from './server.ts';
+import { serveApi } from './server.ts';
 import { openStore } from './store.ts';
 import type { Outcome } from './store.ts';
 import { callVars } from './time.ts';
@@ -89,4 +89,4 @@ client.on('ChannelHangupRequest', abort);
 await (client as any).start(APP);
 console.log(`janus escuchando como app "${APP}"`);
 
-serveFlow({ get: () => flow, set: (nuevo) => { flow = nuevo; } }, flowFile);
+serveApi({ get: () => flow, set: (nuevo) => { flow = nuevo; } }, store, flowFile);

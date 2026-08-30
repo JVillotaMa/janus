@@ -109,6 +109,112 @@ handback, y con ARI sale gratis.
 
 ---
 
+## Cómo se ejecuta
+
+Nada de esto necesita build. Node 24 ejecuta TypeScript directamente.
+
+### Primera vez
+
+```bash
+pnpm install
+cd ui && npm install && cd ..
+```
+
+Sí, dos gestores distintos: pnpm en la raíz y npm en `ui/`. No es descuido —
+pnpm bloquea el script de build de esbuild y Vite no arranca.
+
+El laboratorio de Asterisk no viene en el repo (lleva credenciales y pesa), así
+que se saca de la imagen y se completa con los sonidos:
+
+```bash
+# la config de serie, desde la propia imagen
+mkdir -p janus-lab/etc
+docker create --name ast-tmp andrius/asterisk
+docker cp ast-tmp:/etc/asterisk/. janus-lab/etc     # el /. copia el CONTENIDO
+docker rm ast-tmp
+
+# los audios: la imagen no trae ninguno
+mkdir -p janus-lab/sounds/en
+curl -fsSL https://downloads.asterisk.org/pub/telephony/sounds/asterisk-core-sounds-en-gsm-current.tar.gz \
+  | tar -xz -C janus-lab/sounds/en
+```
+
+Después copia sobre `janus-lab/etc/` los bloques de `janus-lab/etc.example/` y
+**cambia los `CAMBIAME` por contraseñas de verdad**.
+
+### El día a día
+
+Cada uno en su terminal:
+
+```bash
+# 1 · Asterisk
+docker run -d --rm --name asterisk --network host \
+  -v $PWD/janus-lab/etc:/etc/asterisk \
+  -v $PWD/janus-lab/sounds:/var/lib/asterisk/sounds \
+  andrius/asterisk
+
+# 2 · el motor  (ARI + API del flujo en :3000)
+pnpm start
+
+# 3 · el editor  (:5173)
+cd ui && npm run dev
+```
+
+`--network host` no es opcional: el RTP usa un rango UDP ancho y mapearlo en
+modo bridge da audio unidireccional.
+
+Y marcas `100` desde un softphone registrado como `jaime`.
+
+### Todos los comandos
+
+| Comando | Qué hace |
+|---|---|
+| `pnpm start` | El motor: conecta con ARI y sirve `/api/flow` en :3000 |
+| `pnpm test` | Los 63 tests. No necesitan Asterisk ni red |
+| `pnpm typecheck` | `tsc --noEmit`. No compila, solo comprueba |
+| `pnpm calls` | Las últimas llamadas con su traza. `pnpm calls 50` para más |
+| `cd ui && npm run dev` | El editor de flujos en :5173 |
+
+Para el motor, `node --watch src/main.ts` recarga al guardar. Ojo: **el código
+no se recarga solo, el flujo sí** — un `PUT /api/flow` desde el editor cambia el
+grafo en caliente, pero tocar `src/` obliga a reiniciar.
+
+### Mirar por dentro
+
+```bash
+docker exec -it asterisk asterisk -rvvv     # la consola de Asterisk
+```
+
+Y dentro de ella:
+
+```
+pjsip show endpoints     ¿existe y en qué estado está?
+pjsip show contacts      dónde está registrado ahora mismo
+pjsip show transports    ¿hay algo escuchando en el 5060?
+pjsip set logger on      volcar el SIP entero, para ver por qué falla un REGISTER
+dialplan show jaime      qué hay en ese contexto
+```
+
+Desde fuera:
+
+```bash
+curl -u janus:janus http://localhost:8088/ari/asterisk/info   # ¿ARI vivo?
+curl http://localhost:3000/api/flow                            # el flujo actual
+```
+
+### Dónde está cada cosa
+
+```
+src/            el motor (TypeScript, sin build)
+flow.json       el grafo. Lo reescribe el editor
+janus.db        las llamadas y su traza (SQLite). Fuera del repo
+tests/          63 tests deterministas
+ui/             el editor (React Flow + Vite)
+janus-lab/etc   config de Asterisk, montada en el contenedor. Fuera del repo
+```
+
+---
+
 ## Modelo de datos
 
 Sin normalizar nodos y aristas en tablas: siempre se lee el flujo entero.

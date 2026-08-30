@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -8,6 +8,7 @@ import {
   applyEdgeChanges,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import Calls from './Calls.jsx';
 
 const API = '/api/flow';
 
@@ -54,6 +55,22 @@ function toFlow(meta, nodes, edges) {
   };
 }
 
+/**
+ * Nodos y aristas por los que pasó una llamada.
+ *
+ * Los pasos que empiezan por `!` son marcadores del motor (`!dead-end`), no
+ * nodos del grafo: no tienen nada que encender.
+ */
+function traversed(call) {
+  if (!call) return { nodes: new Set(), edges: new Set() };
+  const path = call.trace.map((step) => step.node).filter((node) => !node.startsWith('!'));
+  const edges = new Set();
+  for (let i = 0; i < path.length - 1; i++) edges.add(`${path[i]}→${path[i + 1]}`);
+  return { nodes: new Set(path), edges };
+}
+
+const LIT = '#1a7f37';
+
 export default function App() {
   const [meta, setMeta] = useState(null);
   const [nodes, setNodes] = useState([]);
@@ -61,25 +78,51 @@ export default function App() {
   const [selected, setSelected] = useState(null);
   const [draft, setDraft] = useState('');
   const [status, setStatus] = useState('cargando…');
+  const [call, setCall] = useState(null);
 
   useEffect(() => {
     fetch(API)
       .then((res) => res.json())
       .then((flow) => {
-        const { nodes: n, edges: e } = toGraph(flow);
+        const graph = toGraph(flow);
         setMeta({ start: flow.start, timezone: flow.timezone });
-        setNodes(n);
-        setEdges(e);
-        setStatus(`${n.length} nodos, ${e.length} aristas`);
+        setNodes(graph.nodes);
+        setEdges(graph.edges);
+        setStatus(`${graph.nodes.length} nodos, ${graph.edges.length} aristas`);
       })
       .catch((err) => setStatus(`error: ${err.message} — ¿está el motor levantado?`));
   }, []);
+
+  const path = useMemo(() => traversed(call), [call]);
+
+  // El camino recorrido se pinta encima, sin tocar el grafo que se va a guardar.
+  const litNodes = useMemo(
+    () =>
+      nodes.map((node) =>
+        path.nodes.has(node.id)
+          ? { ...node, style: { border: `2px solid ${LIT}`, background: '#eaf6ec' } }
+          : node,
+      ),
+    [nodes, path],
+  );
+
+  const litEdges = useMemo(
+    () =>
+      edges.map((edge) =>
+        path.edges.has(`${edge.source}→${edge.target}`)
+          ? { ...edge, animated: true, style: { stroke: LIT, strokeWidth: 2 } }
+          : edge,
+      ),
+    [edges, path],
+  );
 
   const onNodesChange = useCallback((cs) => setNodes((ns) => applyNodeChanges(cs, ns)), []);
   const onEdgesChange = useCallback((cs) => setEdges((es) => applyEdgeChanges(cs, es)), []);
   const onConnect = useCallback(
     (conn) =>
-      setEdges((es) => addEdge({ ...conn, id: `e${Date.now()}`, label: '*', data: { when: null } }, es)),
+      setEdges((es) =>
+        addEdge({ ...conn, id: `e${Date.now()}`, label: '*', data: { when: null } }, es),
+      ),
     [],
   );
 
@@ -156,10 +199,36 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', height: '100vh', fontFamily: 'system-ui, sans-serif' }}>
-      <div style={{ flex: 1 }}>
+      <Calls selected={call} onSelect={setCall} />
+
+      <div style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+        {call && (
+          <div
+            style={{
+              position: 'absolute',
+              zIndex: 5,
+              top: 10,
+              left: 10,
+              background: '#fff',
+              border: `1px solid ${LIT}`,
+              borderRadius: 4,
+              padding: '6px 10px',
+              fontSize: 12,
+              display: 'flex',
+              gap: 10,
+              alignItems: 'center',
+            }}
+          >
+            <span style={{ fontFamily: 'monospace' }}>
+              {call.trace.map((step) => step.node).join(' → ')}
+            </span>
+            <button onClick={() => setCall(null)}>apagar</button>
+          </div>
+        )}
+
         <ReactFlow
-          nodes={nodes}
-          edges={edges}
+          nodes={litNodes}
+          edges={litEdges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
@@ -174,7 +243,7 @@ export default function App() {
 
       <aside
         style={{
-          width: 340,
+          width: 320,
           borderLeft: '1px solid #ddd',
           padding: 12,
           display: 'flex',
