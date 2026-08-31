@@ -5,7 +5,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { run, nextNode } from '../src/interpreter.ts';
+import { MAX_STEPS, run, nextNode } from '../src/interpreter.ts';
 import { cancelable, Hungup } from '../src/cancel.ts';
 import { callVars } from '../src/time.ts';
 import { FakeChannel, FakeClient } from './fake-channel.ts';
@@ -202,4 +202,43 @@ test('cancelable rechaza de inmediato si ya habían colgado', async () => {
     cancelable(controller.signal, () => () => {}),
     (err) => err instanceof Hungup,
   );
+});
+
+// ─── Ciclos ──────────────────────────────────────────────────────────────────
+
+test('un ciclo sin salida se corta en vez de colgar el proceso', async () => {
+  const ctx = newCtx();
+  const flow: Flow = {
+    start: 'a',
+    nodes: [{ id: 'a', type: 'noop' }, { id: 'b', type: 'noop' }],
+    edges: [{ from: 'a', to: 'b' }, { from: 'b', to: 'a' }],
+  };
+
+  await assert.rejects(run(anyChannel(), flow, ctx, stubs, 10), /ciclo sin salida/);
+  assert.equal(path(ctx).at(-1), '!too-many-steps', 'queda en la traza');
+  assert.equal(ctx.trace.length, 11, '10 nodos y el marcador');
+});
+
+test('un ciclo que sí sale funciona con normalidad', async () => {
+  const ctx = newCtx();
+  const contador = { n: 0 };
+  const nodos: Nodes = {
+    async cuenta() { return { veces: ++contador.n }; },
+    async hangup() {},
+  };
+  const flow: Flow = {
+    start: 'menu',
+    nodes: [{ id: 'menu', type: 'cuenta' }, { id: 'fin', type: 'hangup' }],
+    edges: [
+      { from: 'menu', to: 'fin', when: { '>=': [{ var: 'veces' }, 3] } },
+      { from: 'menu', to: 'menu' },
+    ],
+  };
+
+  await run(anyChannel(), flow, ctx, nodos);
+  assert.deepEqual(path(ctx), ['menu', 'menu', 'menu', 'fin']);
+});
+
+test('el techo por defecto es holgado para un flujo normal', () => {
+  assert.ok(MAX_STEPS >= 50);
 });
