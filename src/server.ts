@@ -6,7 +6,6 @@
  */
 
 import { createServer } from 'node:http';
-import { writeFile } from 'node:fs/promises';
 import type { Store } from './store.ts';
 import { validate } from './validate.ts';
 import type { Flow } from './types.ts';
@@ -20,10 +19,10 @@ export interface FlowStore {
 /**
  * Levanta la API.
  *
- * Un PUT del flujo reescribe el fichero y lo cambia en caliente: las llamadas
- * en curso conservan el que tenían al entrar.
+ * Un PUT publica una versión nueva en la base y la pone en caliente: las
+ * llamadas en curso conservan la que tenían al entrar.
  */
-export function serveApi(flow: FlowStore, calls: Store, file: URL, port = 3000) {
+export function serveApi(flow: FlowStore, store: Store, port = 3000) {
   return createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const json = (code: number, body: unknown) => {
@@ -32,7 +31,7 @@ export function serveApi(flow: FlowStore, calls: Store, file: URL, port = 3000) 
     };
 
     if (url.pathname === '/api/calls' && req.method === 'GET') {
-      return void json(200, calls.recent(Number(url.searchParams.get('limit')) || 20));
+      return void json(200, store.recent(Number(url.searchParams.get('limit')) || 20));
     }
 
     if (url.pathname !== '/api/flow') return void res.writeHead(404).end();
@@ -53,10 +52,10 @@ export function serveApi(flow: FlowStore, calls: Store, file: URL, port = 3000) 
           return void json(400, { ok: false, issues });
         }
 
-        await writeFile(file, `${JSON.stringify(nuevo, null, 2)}\n`);
+        const { version } = store.publish(nuevo);
         flow.set(nuevo);
-        console.log(`⟳ flujo actualizado: ${nuevo.nodes.length} nodos, ${nuevo.edges.length} aristas`);
-        return void json(200, { ok: true, issues });
+        console.log(`⟳ flujo v${version}: ${nuevo.nodes.length} nodos, ${nuevo.edges.length} aristas`);
+        return void json(200, { ok: true, version, issues });
       } catch (err) {
         return void json(400, { ok: false, issues: [
           { level: 'error', where: 'json', message: (err as Error).message },

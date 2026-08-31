@@ -6,6 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openStore } from '../src/store.ts';
 import type { CallRecord } from '../src/store.ts';
+import type { Flow } from '../src/types.ts';
 
 const call = (over: Partial<CallRecord> = {}): CallRecord => ({
   id: 'canal-1',
@@ -119,5 +120,20 @@ test('caller y did pueden faltar', () => {
   const [saved] = store.recent();
   assert.equal(saved!.caller, null);
   assert.equal(saved!.did, null);
+  store.close();
+});
+
+test('publicar crea versión nueva y la última gana', () => {
+  const store = openStore(':memory:');
+  const flow = (start: string): Flow => ({ start, nodes: [{ id: start, type: 'hangup' }], edges: [] });
+
+  assert.equal(store.latestFlow(), null);
+  assert.equal(store.publish(flow('uno')).version, 1);
+  assert.equal(store.publish(flow('dos')).version, 2);
+
+  const latest = store.latestFlow()!;
+  assert.equal(latest.version, 2);
+  assert.equal(latest.graph.start, 'dos');
+  assert.equal(latest.graph.nodes[0]!.type, 'hangup');
   store.close();
 });

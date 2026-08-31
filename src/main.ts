@@ -15,11 +15,15 @@ import type { Outcome } from './store.ts';
 import { callVars } from './time.ts';
 import type { AriClient, Channel, Ctx, Flow } from './types.ts';
 
-const flowFile = new URL('../flow.json', import.meta.url);
+const store = openStore(new URL('../janus.db', import.meta.url).pathname);
 
-// Mutable: la UI lo reemplaza en caliente. Cada llamada se queda con el que
-// había al entrar, así que editar a mitad de una llamada no la afecta.
-let flow: Flow = JSON.parse(await readFile(flowFile, 'utf8'));
+// La fuente del grafo es la base. Mutable: la UI publica y lo reemplaza en
+// caliente, y cada llamada se queda con el que había al entrar.
+// ponytail: flow.json ya solo siembra la primera arrancada. Cuando toda base en
+// uso tenga su versión 1, se borran el fichero y estas dos líneas.
+const seed = async () =>
+  JSON.parse(await readFile(new URL('../flow.json', import.meta.url), 'utf8')) as Flow;
+let flow: Flow = (store.latestFlow() ?? store.publish(await seed())).graph;
 
 const client = (await ari.connect(
   'http://localhost:8088',
@@ -29,8 +33,6 @@ const client = (await ari.connect(
 
 /** Llamadas vivas, por id de canal. Colgar aborta su señal. */
 const active = new Map<string, AbortController>();
-
-const store = openStore(new URL('../janus.db', import.meta.url).pathname);
 
 client.on('StasisStart', async (event: { args?: string[] }, channel: Channel) => {
   if (event.args?.[0] === DIALED) return; // pata saliente de un `dial`, no una llamada
@@ -89,4 +91,4 @@ client.on('ChannelHangupRequest', abort);
 await (client as any).start(APP);
 console.log(`janus escuchando como app "${APP}"`);
 
-serveApi({ get: () => flow, set: (nuevo) => { flow = nuevo; } }, store, flowFile);
+serveApi({ get: () => flow, set: (nuevo) => { flow = nuevo; } }, store);

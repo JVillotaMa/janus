@@ -14,7 +14,7 @@
  */
 
 import Database from 'better-sqlite3';
-import type { Step, Vars } from './types.ts';
+import type { Flow, Step, Vars } from './types.ts';
 
 /** Cómo terminó una llamada. */
 export type Outcome = 'completed' | 'hungup' | 'error';
@@ -37,13 +37,29 @@ export interface CallRecord {
   trace: Step[];
 }
 
+/** Una versión publicada del grafo. */
+export interface FlowVersion {
+  version: number;
+  graph: Flow;
+  publishedAt: Date;
+}
+
 export interface Store {
+  /** Publica una versión nueva. Nunca actualiza: las versiones son inmutables. */
+  publish(graph: Flow): FlowVersion;
+  /** La última versión publicada, o `null` si la base está vacía. */
+  latestFlow(): FlowVersion | null;
   save(call: CallRecord): void;
   recent(limit?: number): CallRecord[];
   close(): void;
 }
 
 const SCHEMA = `
+  CREATE TABLE IF NOT EXISTS flows (
+    version      INTEGER PRIMARY KEY AUTOINCREMENT,
+    graph        TEXT NOT NULL,
+    published_at TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS calls (
     id         TEXT PRIMARY KEY,
     caller     TEXT,
@@ -62,6 +78,12 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS calls_by_start ON calls(started_at DESC);
 `;
+
+interface FlowRow {
+  version: number;
+  graph: string;
+  published_at: string;
+}
 
 interface CallRow {
   id: string;
@@ -87,6 +109,8 @@ export function openStore(file: string): Store {
   const insertStep = db.prepare(
     'INSERT INTO call_steps (call_id, seq, node, at) VALUES (?, ?, ?, ?)',
   );
+  const insertFlow = db.prepare('INSERT INTO flows (graph, published_at) VALUES (?, ?)');
+  const selectFlow = db.prepare('SELECT * FROM flows ORDER BY version DESC LIMIT 1');
   const selectCalls = db.prepare('SELECT * FROM calls ORDER BY started_at DESC, rowid DESC LIMIT ?');
   const selectSteps = db.prepare('SELECT node, at FROM call_steps WHERE call_id = ? ORDER BY seq');
 
@@ -106,6 +130,26 @@ export function openStore(file: string): Store {
   });
 
   return {
+    publish(graph) {
+      const publishedAt = new Date();
+      const { lastInsertRowid } = insertFlow.run(
+        JSON.stringify(graph),
+        publishedAt.toISOString(),
+      );
+      return { version: Number(lastInsertRowid), graph, publishedAt };
+    },
+
+    latestFlow() {
+      const row = selectFlow.get() as FlowRow | undefined;
+      return row
+        ? {
+            version: row.version,
+            graph: JSON.parse(row.graph) as Flow,
+            publishedAt: new Date(row.published_at),
+          }
+        : null;
+    },
+
     save: (call) => void saveAll(call),
 
     recent(limit = 20) {
