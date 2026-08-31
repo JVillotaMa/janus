@@ -5,7 +5,9 @@ node_modules/
 dist/
 .env
 
-# Laboratorio local de Asterisk: se regenera y lleva credenciales.
-# La forma de la config vive en janus-lab/etc.example/ y el README.
-janus-lab/etc/
-janus-lab/sounds/
+# Config de Asterisk: va versionada, menos lo que genera el motor.
+# pjsip_janus.conf lleva las contraseñas de las troncales.
+asterisk-config/etc/pjsip_janus.conf
+
+# Los audios de Asterisk: 4 MB que se descargan de su web.
+asterisk-config/sounds/

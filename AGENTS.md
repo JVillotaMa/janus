@@ -134,35 +134,48 @@ El intérprete y la cancelación por cuelgue **sí** llevan test siempre.
 
 ## Estado actual
 
-Funciona el bucle mínimo: llamada real entrando por Asterisk, interpretada por
-`engine.js` sobre el grafo de `flow.json`.
+Funciona el bucle completo: llamada real entrando por Asterisk, interpretada
+sobre el grafo que vive en SQLite, con su traza guardada al colgar. Las troncales
+se dan de alta desde la UI y el motor configura Asterisk solo.
 
 ```
 src/
   types.ts       tipos compartidos. Solo declaraciones, se importa con `import type`
   cancel.ts      cancelable + Hungup. El primitivo del que depende todo lo demas
   time.ts        callVars
-  nodes.ts       NODES: say, gather, dial, hangup
+  nodes.ts       NODES: entry, say, gather, dial, hangup
   interpreter.ts run, nextNode
-  server.ts      la API HTTP del flujo
-  store.ts       persistencia de la traza (SQLite)
+  validate.ts    comprobaciones del grafo antes de aceptarlo
+  pjsip.ts       genera la config PJSIP de las troncales. Funcion pura
+  asterisk.ts    escribe el fichero, recarga y pregunta por endpoints
+  server.ts      la API HTTP
+  store.ts       persistencia: flows, trunks y la traza (SQLite)
   calls.ts       script: imprime las ultimas llamadas
   main.ts        entrypoint: conecta ARI y ata las piezas
-flow.json        el grafo, a mano
-tests/           63 tests, deterministas, sin Asterisk   -> pnpm test
-  fake-channel.js    dobles de canal, bridge y cliente ARI
-  interpreter.test.js  bucle, aristas, horario, cancelacion
-  nodes.test.js        say / gather / hangup, con timers simulados
-  dial.test.js         originate, bridge, causas Q.931, handback
-  time.test.js         zonas IANA, DST, weekday ISO
-  store.test.js        guardado y lectura, con base en memoria
+flow.json        SOLO la semilla de una base vacia. El grafo vive en la BBDD
+tests/           117 tests, deterministas, sin Asterisk   -> pnpm test
+  fake-channel.ts    dobles de canal, bridge y cliente ARI
+  interpreter.test.ts  bucle, aristas, horario, cancelacion, nodo entry
+  nodes.test.ts        say / gather / hangup, con timers simulados
+  dial.test.ts         originate, bridge, causas Q.931, handback
+  time.test.ts         zonas IANA, DST, weekday ISO
+  store.test.ts        flows, trunks y llamadas, con base en memoria
+  validate.test.ts     reglas del grafo y del nodo de entrada
+  pjsip.test.ts        los dos modos de troncal, y el dialplan del repo
+  asterisk.test.ts     escritura del fichero generado, sobre un tmpdir
 ui/              editor React Flow (Vite)   -> cd ui && npm run dev
-janus-lab/etc    config de Asterisk (montada en el contenedor)
-janus-lab/sounds sonidos core, montados en /var/lib/asterisk/sounds
+asterisk-config/etc    config de Asterisk, versionada y montada en el contenedor
+asterisk-config/sounds sonidos core, montados en /var/lib/asterisk/sounds
 ```
 
-Nodos implementados: `say`, `gather`, `dial`, `hangup`. Falta `branch`,
-`ai_agent`, `http`, `answer`.
+Nodos implementados: `entry`, `say`, `gather`, `dial`, `hangup`. Falta
+`ai_agent`. `branch`, `http` y `answer` estan descartados a proposito.
+
+`entry` es obligatorio y unico: es el arranque del grafo, no ejecuta nada (la
+llamada la contesta el dialplan) y solo nombra la troncal por la que entra. Como
+es mudo, se puede ramificar nada mas entrar sin reproducir nada antes. En la UI
+tiene handle solo de salida, asi que no se le puede dibujar una arista de
+entrada; `validate.ts` lo comprueba igual, porque la API no es solo la UI.
 
 `dial` origina la pata saliente con `appArgs: DIALED`. El handler de
 `StasisStart` la ignora por esa marca; sin ella trataria la pata saliente como
@@ -173,12 +186,24 @@ El enrutado por horario NO es un tipo de nodo: `callVars` siembra `hhmm`,
 comparan con jsonlogic normal. La zona sale de `flow.timezone` (IANA, nunca un
 offset) y se calcula una sola vez desde `ctx.startedAt`, no en cada nodo.
 
-El motor sirve `GET/PUT http://localhost:3000/api/flow` con `node:http`.
-ponytail: son dos rutas. Cuando haya que servir la UI compilada o pasen de
-media docena, migrar a Express o Hono son diez lineas — hasta entonces no. Un PUT reescribe
-`flow.json` y cambia el flujo en caliente: las llamadas en curso conservan el
-que tenian al entrar (`flowAtStart`), las nuevas cogen el nuevo. Es el invariante
-de versiones inmutables, gratis.
+El motor sirve cinco rutas con `node:http`, **solo en `127.0.0.1`**:
+
+```
+GET/PUT /api/flow           el grafo. El PUT publica version nueva
+GET     /api/calls          las ultimas llamadas con su traza
+GET/PUT /api/trunks         las troncales. El PUT recarga Asterisk
+GET     /api/trunks/config  la config generada, con las contrasenas tapadas
+```
+
+No hay autenticacion y no la va a haber mientras el puerto no salga de la
+maquina: se llega por tunel SSH, que autentica mejor que nada que escribieramos.
+**No cambies el bind a `0.0.0.0`**: desde que hay contrasenas SIP en la base, ese
+puerto es una maquina de recolectar credenciales. Filtrar por IP de origen no
+vale — con un proxy delante todo llega de `127.0.0.1` y el filtro aprueba a todos.
+
+Un PUT del flujo publica una version nueva y lo cambia en caliente: las llamadas
+en curso conservan el que tenian al entrar (`flowAtStart`), las nuevas cogen el
+nuevo. Es el invariante de versiones inmutables, gratis.
 
 **Gestores de paquetes:** la raiz usa pnpm, `ui/` usa npm. No es descuido: pnpm
 bloquea el script de build de esbuild y la UI no arranca. No los unifiques sin
@@ -201,8 +226,34 @@ si no es interactivo).
 
 Se descarto `node:sqlite`: hace lo mismo sin dependencias, pero es experimental.
 
-El grafo sigue siendo un fichero. El versionado del README todavia no existe, asi
-que `calls` no guarda con que version entro la llamada.
+El grafo vive en la tabla `flows`, append-only: publicar inserta, nunca
+actualiza. `flow.json` solo siembra la version 1 de una base vacia. `calls`
+todavia no guarda con que version entro la llamada.
+
+## Troncales: el motor configura Asterisk
+
+Se dan de alta desde la UI y acaban en la tabla `trunks`. De ahi el motor genera
+**un solo fichero**, `asterisk-config/etc/pjsip_janus.conf`, y recarga con
+`PUT /ari/asterisk/modules/res_pjsip.so` por el mismo cliente ARI que ya tiene
+conectado. Nada de AMI ni de `asterisk -rx`.
+
+Reglas que no conviene romper:
+
+- **El resto de `asterisk-config/etc/` esta versionado y el motor no lo toca.**
+  La linea `#include pjsip_janus.conf` de `pjsip.conf` y el contexto `[janus]` de
+  `extensions.conf` son texto commiteado, no generado. Generar una constante en
+  cada arranque no compra nada.
+- **`pjsip_janus.conf` es el unico fichero fuera de git**, porque es el unico con
+  contrasenas de proveedor. Es un derivado: se borra y vuelve al arrancar.
+- **Las contrasenas no entran en el grafo.** El nodo `entry` solo guarda el
+  nombre de la troncal. El grafo se sirve sin auth y sus versiones son
+  inmutables: un secreto escrito ahi queda publicado y no se puede retirar.
+- **La contrasena no vuelve en ningun GET.** Una troncal que llega en el PUT sin
+  ese campo conserva la que tuviera guardada; asi la UI reenvia la lista que
+  acaba de leer sin manejar secretos.
+- Un endpoint borrado desaparece de `pjsip show endpoints` pero **sigue en el
+  registro de ARI hasta que Asterisk reinicia**, respondiendo `offline` en vez de
+  404. No molesta: solo se pregunta por troncales que estan en la base.
 
 **TypeScript sin build.** Node 24 ejecuta `.ts` directamente por borrado de
 tipos, asi que no hay `tsc` ni bundler en el bucle de desarrollo:
@@ -229,8 +280,8 @@ Levantar el laboratorio:
 
 ```bash
 docker run -d --rm --name asterisk --network host \
-  -v $PWD/janus-lab/etc:/etc/asterisk \
-  -v $PWD/janus-lab/sounds:/var/lib/asterisk/sounds \
+  -v $PWD/asterisk-config/etc:/etc/asterisk \
+  -v $PWD/asterisk-config/sounds:/var/lib/asterisk/sounds \
   andrius/asterisk
 pnpm start              # y marcar 100 desde el softphone
 ```

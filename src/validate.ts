@@ -21,10 +21,16 @@ export interface Issue {
 
 /**
  * @param flow El grafo a comprobar.
+ * @param trunks Nombres de las troncales dadas de alta, para avisar si la
+ *     entrada nombra una que no existe.
  * @param types Tipos de nodo que el motor sabe ejecutar.
  * @returns Errores y avisos, en orden de aparición. Vacío si todo está bien.
  */
-export function validate(flow: Flow, types: string[] = Object.keys(NODES)): Issue[] {
+export function validate(
+  flow: Flow,
+  trunks: string[] = [],
+  types: string[] = Object.keys(NODES),
+): Issue[] {
   const issues: Issue[] = [];
   const error = (where: string, message: string) =>
     issues.push({ level: 'error', where, message });
@@ -42,6 +48,25 @@ export function validate(flow: Flow, types: string[] = Object.keys(NODES)): Issu
 
   if (!ids.has(flow.start)) {
     error(flow.start, 'el nodo de arranque no existe');
+  }
+
+  const entries = flow.nodes.filter((node) => node.type === 'entry');
+  if (entries.length !== 1) {
+    error('entry', `tiene que haber exactamente un nodo de entrada, hay ${entries.length}`);
+  }
+
+  const entry = entries[0];
+  if (entry) {
+    if (flow.start !== entry.id) {
+      error(entry.id, 'el nodo de arranque tiene que ser el nodo de entrada');
+    }
+    for (const edge of flow.edges.filter((e) => e.to === entry.id)) {
+      error(`${edge.from} → ${edge.to}`, 'no puede entrar ninguna arista en el nodo de entrada');
+    }
+    const trunk = entry.config?.trunk;
+    if (trunk && !trunks.includes(trunk)) {
+      warn(entry.id, `la troncal "${trunk}" no está dada de alta`);
+    }
   }
 
   const outgoing = new Map<string, Edge[]>();

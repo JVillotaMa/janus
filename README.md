@@ -123,24 +123,19 @@ cd ui && npm install && cd ..
 Sí, dos gestores distintos: pnpm en la raíz y npm en `ui/`. No es descuido —
 pnpm bloquea el script de build de esbuild y Vite no arranca.
 
-El laboratorio de Asterisk no viene en el repo (lleva credenciales y pesa), así
-que se saca de la imagen y se completa con los sonidos:
+La configuración de Asterisk viene en el repo, en `asterisk-config/etc/`. Lo
+único que hay que bajar son los audios, que pesan y se regeneran:
 
 ```bash
-# la config de serie, desde la propia imagen
-mkdir -p janus-lab/etc
-docker create --name ast-tmp andrius/asterisk
-docker cp ast-tmp:/etc/asterisk/. janus-lab/etc     # el /. copia el CONTENIDO
-docker rm ast-tmp
-
-# los audios: la imagen no trae ninguno
-mkdir -p janus-lab/sounds/en
+mkdir -p asterisk-config/sounds/en
 curl -fsSL https://downloads.asterisk.org/pub/telephony/sounds/asterisk-core-sounds-en-gsm-current.tar.gz \
-  | tar -xz -C janus-lab/sounds/en
+  | tar -xz -C asterisk-config/sounds/en
 ```
 
-Después copia sobre `janus-lab/etc/` los bloques de `janus-lab/etc.example/` y
-**cambia los `CAMBIAME` por contraseñas de verdad**.
+Las contraseñas del laboratorio están en `pjsip.conf` y `ari.conf`: son de un
+contenedor en localhost, cámbialas antes de exponer nada. El fichero que genera
+el motor con las credenciales de las troncales, `pjsip_janus.conf`, sí está
+fuera de git.
 
 ### El día a día
 
@@ -149,8 +144,8 @@ Cada uno en su terminal:
 ```bash
 # 1 · Asterisk
 docker run -d --rm --name asterisk --network host \
-  -v $PWD/janus-lab/etc:/etc/asterisk \
-  -v $PWD/janus-lab/sounds:/var/lib/asterisk/sounds \
+  -v $PWD/asterisk-config/etc:/etc/asterisk \
+  -v $PWD/asterisk-config/sounds:/var/lib/asterisk/sounds \
   andrius/asterisk
 
 # 2 · el motor  (ARI + API del flujo en :3000)
@@ -169,8 +164,8 @@ Y marcas `100` desde un softphone registrado como `jaime`.
 
 | Comando | Qué hace |
 |---|---|
-| `pnpm start` | El motor: conecta con ARI y sirve `/api/flow` en :3000 |
-| `pnpm test` | Los 63 tests. No necesitan Asterisk ni red |
+| `pnpm start` | El motor: conecta con ARI, configura las troncales y sirve la API en :3000 |
+| `pnpm test` | Los 117 tests. No necesitan Asterisk ni red |
 | `pnpm typecheck` | `tsc --noEmit`. No compila, solo comprueba |
 | `pnpm calls` | Las últimas llamadas con su traza. `pnpm calls 50` para más |
 | `cd ui && npm run dev` | El editor de flujos en :5173 |
@@ -200,17 +195,19 @@ Desde fuera:
 ```bash
 curl -u janus:janus http://localhost:8088/ari/asterisk/info   # ¿ARI vivo?
 curl http://localhost:3000/api/flow                            # el flujo actual
+curl http://localhost:3000/api/trunks                          # las troncales y su estado
 ```
 
 ### Dónde está cada cosa
 
 ```
 src/            el motor (TypeScript, sin build)
-flow.json       el grafo. Lo reescribe el editor
-janus.db        las llamadas y su traza (SQLite). Fuera del repo
-tests/          63 tests deterministas
+flow.json       la semilla de una base vacía. El grafo vive en la BBDD
+janus.db        flujos, troncales y trazas (SQLite). Fuera del repo
+tests/          117 tests deterministas
 ui/             el editor (React Flow + Vite)
-janus-lab/etc   config de Asterisk, montada en el contenedor. Fuera del repo
+asterisk-config/etc     config de Asterisk, montada en el contenedor. En el repo
+asterisk-config/sounds  los audios. Fuera del repo: pesan y se regeneran
 ```
 
 ---
@@ -238,13 +235,16 @@ en JS y en el back, y se serializa solo.
 
 ## Nodos
 
-Ocho, y ni uno más hasta que falte alguno de verdad:
+Cinco implementados, y ni uno más hasta que falte alguno de verdad:
 
-`answer` · `say` (TTS/audio) · `gather` (DTMF/voz) · `branch` · `dial`
-(endpoint/cola) · `ai_agent` · `http` · `hangup`
+`entry` · `say` (TTS/audio) · `gather` (DTMF/voz) · `dial` (endpoint/cola) ·
+`hangup`. Falta `ai_agent`.
 
-Cubren el 90%. La condición más pedida con diferencia es **horario laboral**:
-que se configure en dos clics, sea nodo propio o azúcar sobre `branch`.
+`branch`, `http` y `answer` se descartaron: las condiciones viven en las aristas,
+así que ramificar no necesita nodo; y contestar lo hace el dialplan.
+
+El horario tampoco es un nodo. `callVars` siembra `hhmm`, `weekday` y `date` al
+entrar la llamada, y las aristas que salen de `entry` los comparan con jsonlogic.
 
 ---
 

@@ -6,6 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MAX_STEPS, run, nextNode } from '../src/interpreter.ts';
+import { NODES } from '../src/nodes.ts';
 import { cancelable, Hungup } from '../src/cancel.ts';
 import { callVars } from '../src/time.ts';
 import { FakeChannel, FakeClient } from './fake-channel.ts';
@@ -241,4 +242,50 @@ test('un ciclo que sí sale funciona con normalidad', async () => {
 
 test('el techo por defecto es holgado para un flujo normal', () => {
   assert.ok(MAX_STEPS >= 50);
+});
+
+// ─── El nodo de entrada ──────────────────────────────────────────────────────
+
+test('la entrada no toca el canal y ramifica sin ejecutar nada antes', async () => {
+  const flow: Flow = {
+    start: 'entrada',
+    nodes: [
+      { id: 'entrada', type: 'entry' },
+      { id: 'abierto', type: 'hangup' },
+      { id: 'cerrado', type: 'hangup' },
+    ],
+    edges: [
+      { from: 'entrada', to: 'abierto', when: { '>=': [{ var: 'hhmm' }, 900] } },
+      { from: 'entrada', to: 'cerrado' },
+    ],
+  };
+  const channel = anyChannel();
+  const ctx = newCtx(undefined, { hhmm: 1030 });
+
+  await run(channel, flow, ctx, NODES);
+
+  assert.deepEqual(path(ctx), ['entrada', 'abierto'], 'la entrada es el primer paso de la traza');
+  assert.deepEqual(channel.played, [], 'no ha reproducido nada');
+  assert.equal(channel.answered, false, 'contesta el dialplan, no el flujo');
+  assert.equal(channel.hungUp, true, 'ha llegado al hangup');
+});
+
+test('la entrada toma la arista por defecto cuando no casa la condición', async () => {
+  const flow: Flow = {
+    start: 'entrada',
+    nodes: [
+      { id: 'entrada', type: 'entry' },
+      { id: 'abierto', type: 'hangup' },
+      { id: 'cerrado', type: 'hangup' },
+    ],
+    edges: [
+      { from: 'entrada', to: 'abierto', when: { '>=': [{ var: 'hhmm' }, 900] } },
+      { from: 'entrada', to: 'cerrado' },
+    ],
+  };
+  const ctx = newCtx(undefined, { hhmm: 330 });
+
+  await run(anyChannel(), flow, ctx, NODES);
+
+  assert.deepEqual(path(ctx), ['entrada', 'cerrado']);
 });

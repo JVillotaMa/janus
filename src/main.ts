@@ -9,11 +9,12 @@ import { readFile } from 'node:fs/promises';
 import { Hungup } from './cancel.ts';
 import { run } from './interpreter.ts';
 import { APP, DIALED } from './nodes.ts';
+import { endpointStates, reload, writeTrunks } from './asterisk.ts';
 import { serveApi } from './server.ts';
 import { openStore } from './store.ts';
 import type { Outcome } from './store.ts';
 import { callVars } from './time.ts';
-import type { AriClient, Channel, Ctx, Flow } from './types.ts';
+import type { AriAdmin, AriClient, Channel, Ctx, Flow, Trunk } from './types.ts';
 
 const store = openStore(new URL('../janus.db', import.meta.url).pathname);
 
@@ -29,10 +30,29 @@ const client = (await ari.connect(
   'http://localhost:8088',
   'janus',
   'janus',
-)) as unknown as AriClient;
+)) as unknown as AriClient & AriAdmin;
 
 /** Llamadas vivas, por id de canal. Colgar aborta su señal. */
 const active = new Map<string, AbortController>();
+
+// ponytail: el laboratorio monta asterisk-config/etc en el contenedor. En una
+// caja de verdad se apunta con ASTERISK_ETC=/etc/asterisk.
+const configDir =
+  process.env.ASTERISK_ETC ?? new URL('../asterisk-config/etc', import.meta.url).pathname;
+
+/** Vuelca las troncales a Asterisk y las aplica. */
+const apply = async (trunks: Trunk[]) => {
+  writeTrunks(configDir, trunks);
+  await reload(client, 'res_pjsip.so');
+};
+
+try {
+  await apply(store.trunks());
+  console.log(`✓ Asterisk aprovisionado: ${store.trunks().length} troncales`);
+} catch (err) {
+  // No es fatal: la API tiene que levantar igual para poder arreglarlo.
+  console.error('✗ no se pudo aprovisionar Asterisk:', (err as Error).message);
+}
 
 client.on('StasisStart', async (event: { args?: string[] }, channel: Channel) => {
   if (event.args?.[0] === DIALED) return; // pata saliente de un `dial`, no una llamada
@@ -91,4 +111,7 @@ client.on('ChannelHangupRequest', abort);
 await (client as any).start(APP);
 console.log(`janus escuchando como app "${APP}"`);
 
-serveApi({ get: () => flow, set: (nuevo) => { flow = nuevo; } }, store);
+serveApi({ get: () => flow, set: (nuevo) => { flow = nuevo; } }, store, {
+  apply,
+  states: (names) => endpointStates(client, names),
+});

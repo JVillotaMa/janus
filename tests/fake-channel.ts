@@ -19,13 +19,16 @@ export class FakeChannel extends EventEmitter {
   played: string[] = [];
   playbacks: FakePlayback[] = [];
   hungUp = false;
+  answered = false;
 
   constructor(id = 'caller') {
     super();
     this.id = id;
   }
 
-  async answer() {}
+  async answer() {
+    this.answered = true;
+  }
 
   async play({ media }: { media: string }) {
     this.played.push(media);

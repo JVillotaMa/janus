@@ -91,6 +91,14 @@ function waitUntilGone(
 }
 
 export const NODES: Nodes = {
+  /**
+   * El punto de entrada del grafo. No hace nada, y por eso sirve: la llamada la
+   * contesta el dialplan antes de llegar al motor, así que desde aquí se puede
+   * ramificar nada más entrar sin reproducir audio ni esperar. Su config solo
+   * nombra la troncal por la que entra la llamada; el secreto vive en la base.
+   */
+  async entry() {},
+
   async say(channel, config, ctx: Ctx) {
     await playToEnd(channel, config.media, ctx.signal);
   },

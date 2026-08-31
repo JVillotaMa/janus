@@ -3,18 +3,22 @@ import {
   ReactFlow,
   Background,
   Controls,
+  Handle,
+  Position,
   addEdge,
   applyNodeChanges,
   applyEdgeChanges,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import Calls from './Calls.jsx';
+import Trunks from './Trunks.jsx';
 import { edgeLabel, isFallback, layout } from './graph.js';
 
 const API = '/api/flow';
 
 /** Un color por tipo de nodo: se distinguen de un vistazo sin leer la etiqueta. */
 const TYPE = {
+  entry: { bg: '#f3eefc', line: '#8250df' },
   say: { bg: '#eef4ff', line: '#4a7fd4' },
   gather: { bg: '#fff6e5', line: '#c8892a' },
   dial: { bg: '#eaf6ec', line: '#3d9153' },
@@ -34,6 +38,25 @@ const nodeStyle = (type) => {
   };
 };
 
+/**
+ * El nodo de entrada. Solo tiene handle de salida, así que React Flow no deja
+ * dibujar una arista hacia él: la regla se aplica sola, sin validar nada.
+ */
+function EntryNode({ data }) {
+  return (
+    <>
+      <div style={{ fontWeight: 600 }}>▼ Entrada</div>
+      <div style={{ color: '#666', marginTop: 2 }}>
+        {data.config?.trunk ?? 'sin troncal'}
+      </div>
+      <Handle type="source" position={Position.Bottom} />
+    </>
+  );
+}
+
+// Fuera del componente: React Flow avisa si el objeto cambia en cada render.
+const nodeTypes = { entry: EntryNode };
+
 /** flow.json -> lo que entiende React Flow. */
 function toGraph(flow) {
   const placed = layout(flow);
@@ -41,6 +64,7 @@ function toGraph(flow) {
     nodes: flow.nodes.map((node) => ({
       id: node.id,
       position: node.position ?? placed.get(node.id),
+      ...(node.type === 'entry' ? { type: 'entry' } : {}),
       style: nodeStyle(node.type),
       data: {
         label: `${node.id}  ·  ${node.type}`,
@@ -123,6 +147,7 @@ export default function App() {
   const [status, setStatus] = useState('cargando…');
   const [call, setCall] = useState(null);
   const [issues, setIssues] = useState([]);
+  const [zoomed, setZoomed] = useState(null);
 
   useEffect(() => {
     fetch(API)
@@ -229,6 +254,14 @@ export default function App() {
     setStatus('elemento actualizado — falta aplicar al motor');
   };
 
+  /** Aplica la config del formulario al nodo, sin pasar por el JSON. */
+  const setConfig = (id, config) => {
+    setNodes((ns) =>
+      ns.map((n) => (n.id === id ? { ...n, data: { ...n.data, config } } : n)),
+    );
+    setStatus('elemento actualizado — falta aplicar al motor');
+  };
+
   const addNode = () => {
     const id = `nodo-${nodes.length + 1}`;
     setNodes((ns) => [
@@ -241,6 +274,10 @@ export default function App() {
       },
     ]);
   };
+
+  const selectedNode =
+    selected?.kind === 'node' ? nodes.find((node) => node.id === selected.id) : null;
+  const zoomedNode = zoomed ? nodes.find((node) => node.id === zoomed) : null;
 
   const push = async () => {
     const res = await fetch(API, {
@@ -292,7 +329,12 @@ export default function App() {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
+          nodeTypes={nodeTypes}
           onNodeClick={(_, node) => select('node', node)}
+          onNodeDoubleClick={(_, node) => {
+            select('node', node);
+            if (node.data.type === 'entry') setZoomed(node.id);
+          }}
           onEdgeClick={(_, edge) => select('edge', edge)}
           fitView
         >
@@ -354,18 +396,55 @@ export default function App() {
             <strong>
               {selected.kind === 'node' ? 'Nodo' : 'Arista'} {selected.id}
             </strong>
-            <textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              spellCheck={false}
-              style={{ flex: 1, fontFamily: 'monospace', fontSize: 12, padding: 8 }}
-            />
-            <button onClick={applyDraft}>Guardar en el elemento</button>
+            {selectedNode?.data.type === 'entry' ? (
+              <Trunks
+                config={selectedNode.data.config ?? {}}
+                onChange={(config) => setConfig(selectedNode.id, config)}
+              />
+            ) : (
+              <>
+                <textarea
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  spellCheck={false}
+                  style={{ flex: 1, fontFamily: 'monospace', fontSize: 12, padding: 8 }}
+                />
+                <button onClick={applyDraft}>Guardar en el elemento</button>
+              </>
+            )}
           </>
         ) : (
           <small style={{ color: '#999' }}>Pincha un nodo o una arista para editarlo.</small>
         )}
       </aside>
+
+      {zoomedNode && (
+        <div
+          onClick={() => setZoomed(null)}
+          style={{
+            position: 'fixed', inset: 0, background: '#0006', zIndex: 20,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: '#fff', borderRadius: 8, padding: 20, width: 560,
+              maxHeight: '85vh', overflow: 'auto',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+              <strong>Entrada · {zoomedNode.id}</strong>
+              <button onClick={() => setZoomed(null)}>cerrar</button>
+            </div>
+            <Trunks
+              config={zoomedNode.data.config ?? {}}
+              onChange={(config) => setConfig(zoomedNode.id, config)}
+              wide
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

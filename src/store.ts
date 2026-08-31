@@ -14,7 +14,8 @@
  */
 
 import Database from 'better-sqlite3';
-import type { Flow, Step, Vars } from './types.ts';
+import type { Flow, Step, Trunk, Vars } from './types.ts';
+export type { Trunk };
 
 /** Cómo terminó una llamada. */
 export type Outcome = 'completed' | 'hungup' | 'error';
@@ -49,6 +50,14 @@ export interface Store {
   publish(graph: Flow): FlowVersion;
   /** La última versión publicada, o `null` si la base está vacía. */
   latestFlow(): FlowVersion | null;
+  /** Las troncales guardadas, con contraseña: es lo que necesita el generador. */
+  trunks(): Trunk[];
+  /**
+   * Reemplaza la colección entera. Una troncal que llega sin `password`
+   * conserva la que tuviera guardada, para que la UI pueda reenviar la lista
+   * que acaba de leer sin manejar secretos.
+   */
+  saveTrunks(list: Trunk[]): void;
   save(call: CallRecord): void;
   recent(limit?: number): CallRecord[];
   close(): void;
@@ -59,6 +68,14 @@ const SCHEMA = `
     version      INTEGER PRIMARY KEY AUTOINCREMENT,
     graph        TEXT NOT NULL,
     published_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS trunks (
+    name     TEXT PRIMARY KEY,
+    host     TEXT NOT NULL,
+    mode     TEXT NOT NULL,
+    username TEXT,
+    password TEXT,
+    match_ip TEXT
   );
   CREATE TABLE IF NOT EXISTS calls (
     id         TEXT PRIMARY KEY,
@@ -83,6 +100,15 @@ interface FlowRow {
   version: number;
   graph: string;
   published_at: string;
+}
+
+interface TrunkRow {
+  name: string;
+  host: string;
+  mode: string;
+  username: string | null;
+  password: string | null;
+  match_ip: string | null;
 }
 
 interface CallRow {
@@ -111,8 +137,39 @@ export function openStore(file: string): Store {
   );
   const insertFlow = db.prepare('INSERT INTO flows (graph, published_at) VALUES (?, ?)');
   const selectFlow = db.prepare('SELECT * FROM flows ORDER BY version DESC LIMIT 1');
+  const selectTrunks = db.prepare('SELECT * FROM trunks ORDER BY name');
+  const clearTrunks = db.prepare('DELETE FROM trunks');
+  const insertTrunk = db.prepare(
+    `INSERT INTO trunks (name, host, mode, username, password, match_ip)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
   const selectCalls = db.prepare('SELECT * FROM calls ORDER BY started_at DESC, rowid DESC LIMIT ?');
   const selectSteps = db.prepare('SELECT node, at FROM call_steps WHERE call_id = ? ORDER BY seq');
+
+  const readTrunks = (): Trunk[] =>
+    (selectTrunks.all() as TrunkRow[]).map((row) => ({
+      name: row.name,
+      host: row.host,
+      mode: row.mode as Trunk['mode'],
+      username: row.username,
+      password: row.password,
+      matchIp: row.match_ip,
+    }));
+
+  // La colección se reemplaza entera, igual que se lee entera.
+  const replaceTrunks = db.transaction((list: Trunk[]) => {
+    clearTrunks.run();
+    for (const trunk of list) {
+      insertTrunk.run(
+        trunk.name,
+        trunk.host,
+        trunk.mode,
+        trunk.username ?? null,
+        trunk.password ?? null,
+        trunk.matchIp ?? null,
+      );
+    }
+  });
 
   // La llamada y sus pasos entran juntos o no entra ninguno.
   const saveAll = db.transaction((call: CallRecord) => {
@@ -148,6 +205,18 @@ export function openStore(file: string): Store {
             publishedAt: new Date(row.published_at),
           }
         : null;
+    },
+
+    trunks: readTrunks,
+
+    saveTrunks(list) {
+      const kept = new Map(readTrunks().map((trunk) => [trunk.name, trunk.password ?? null]));
+      replaceTrunks(
+        list.map((trunk) => ({
+          ...trunk,
+          password: trunk.password ?? kept.get(trunk.name) ?? null,
+        })),
+      );
     },
 
     save: (call) => void saveAll(call),

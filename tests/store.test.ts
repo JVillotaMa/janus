@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { openStore } from '../src/store.ts';
 import type { CallRecord } from '../src/store.ts';
 import type { Flow } from '../src/types.ts';
+import type { Trunk } from '../src/store.ts';
 
 const call = (over: Partial<CallRecord> = {}): CallRecord => ({
   id: 'canal-1',
@@ -135,5 +136,65 @@ test('publicar crea versión nueva y la última gana', () => {
   assert.equal(latest.version, 2);
   assert.equal(latest.graph.start, 'dos');
   assert.equal(latest.graph.nodes[0]!.type, 'hangup');
+  store.close();
+});
+
+const trunk = (over: Partial<Trunk> = {}): Trunk => ({
+  name: 'masmovil',
+  host: 'sip.masmovil.es',
+  mode: 'register',
+  username: 'u123',
+  password: 'secreto',
+  ...over,
+});
+
+test('guarda troncales y las devuelve ordenadas', () => {
+  const store = openStore(':memory:');
+  store.saveTrunks([trunk({ name: 'voztele' }), trunk()]);
+
+  assert.deepEqual(store.trunks().map((t) => t.name), ['masmovil', 'voztele']);
+  store.close();
+});
+
+test('la colección se reemplaza entera: omitir una troncal la borra', () => {
+  const store = openStore(':memory:');
+  store.saveTrunks([trunk(), trunk({ name: 'voztele' })]);
+  store.saveTrunks([trunk()]);
+
+  assert.deepEqual(store.trunks().map((t) => t.name), ['masmovil']);
+  store.close();
+});
+
+test('una troncal que llega sin contraseña conserva la guardada', () => {
+  const store = openStore(':memory:');
+  store.saveTrunks([trunk({ password: 'secreto' })]);
+
+  // Es lo que reenvía la UI: la lista que acaba de leer, ya sin el secreto.
+  store.saveTrunks([trunk({ password: undefined, host: 'sip.nuevo.es' })]);
+
+  const [guardada] = store.trunks();
+  assert.equal(guardada!.password, 'secreto');
+  assert.equal(guardada!.host, 'sip.nuevo.es');
+  store.close();
+});
+
+test('una contraseña nueva sustituye a la guardada', () => {
+  const store = openStore(':memory:');
+  store.saveTrunks([trunk({ password: 'vieja' })]);
+  store.saveTrunks([trunk({ password: 'nueva' })]);
+
+  assert.equal(store.trunks()[0]!.password, 'nueva');
+  store.close();
+});
+
+test('el modo identify no guarda credenciales', () => {
+  const store = openStore(':memory:');
+  store.saveTrunks([
+    { name: 'voztele', host: 'sip.voztele.com', mode: 'identify', matchIp: '212.0.0.5' },
+  ]);
+
+  const [guardada] = store.trunks();
+  assert.equal(guardada!.password, null);
+  assert.equal(guardada!.matchIp, '212.0.0.5');
   store.close();
 });

@@ -8,6 +8,21 @@
 
 export type Vars = Record<string, unknown>;
 
+/**
+ * Una troncal SIP. `password` solo viaja hacia dentro: la API nunca la devuelve.
+ *
+ * `register` = nos registramos contra el proveedor con usuario y contraseña.
+ * `identify` = el proveedor nos autentica por IP de origen y no hay credenciales.
+ */
+export interface Trunk {
+  name: string;
+  host: string;
+  mode: 'register' | 'identify';
+  username?: string | null;
+  password?: string | null;
+  matchIp?: string | null;
+}
+
 /** Un paso del recorrido. Es el origen de `call_steps`. */
 export interface Step {
   node: string;
@@ -78,6 +93,16 @@ export interface Channel {
 export interface Bridge {
   destroy(): Promise<void>;
   addChannel(options: { channel: string[] }): Promise<void>;
+}
+
+/**
+ * La parte de ARI que se usa para administrar Asterisk, no para controlar
+ * llamadas. Va aparte para que los dobles de canal de los tests no tengan que
+ * cargar con métodos que ningún nodo llama.
+ */
+export interface AriAdmin {
+  asterisk: { reloadModule(options: { moduleName: string }): Promise<unknown> };
+  endpoints: { get(options: { tech: string; resource: string }): Promise<{ state?: string }> };
 }
 
 export interface AriClient {

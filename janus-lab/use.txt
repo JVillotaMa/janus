@@ -1,6 +1,0 @@
-docker run -it --rm --name asterisk --network host \
-  -v ~/Desktop/side-projects/janus/janus-lab/etc:/etc/asterisk \
-  -v ~/Desktop/side-projects/janus/janus-lab/sounds:/var/lib/asterisk/sounds \
-  andrius/asterisk
-
-docker exec -it asterisk asterisk -rvvv

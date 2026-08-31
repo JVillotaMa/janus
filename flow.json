@@ -4,13 +4,21 @@
   "nodes": [
     {
       "id": "entrada",
+      "type": "entry",
+      "position": {
+        "x": 129.04,
+        "y": -160.0
+      }
+    },
+    {
+      "id": "saluda",
       "type": "say",
       "config": {
         "media": "sound:hello-world"
       },
       "position": {
-        "x": 129.041633404517,
-        "y": -38.71707900356604
+        "x": 129.04,
+        "y": 60.0
       }
     },
     {
@@ -82,7 +90,7 @@
   "edges": [
     {
       "from": "entrada",
-      "to": "menu",
+      "to": "saluda",
       "when": {
         "and": [
           {
@@ -115,6 +123,10 @@
     {
       "from": "entrada",
       "to": "cerrado"
+    },
+    {
+      "from": "saluda",
+      "to": "menu"
     },
     {
       "from": "menu",
