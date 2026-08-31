@@ -8,6 +8,7 @@
 import { createServer } from 'node:http';
 import { writeFile } from 'node:fs/promises';
 import type { Store } from './store.ts';
+import { validate } from './validate.ts';
 import type { Flow } from './types.ts';
 
 /** Lee y reemplaza el flujo vivo del motor. */
@@ -43,12 +44,23 @@ export function serveApi(flow: FlowStore, calls: Store, file: URL, port = 3000) 
       for await (const chunk of req) chunks.push(chunk as Buffer);
       try {
         const nuevo = JSON.parse(Buffer.concat(chunks).toString()) as Flow;
+
+        // Los errores no se guardan: un tipo de nodo desconocido reventaría en
+        // una llamada real. Los avisos sí, y viajan de vuelta para que se vean.
+        const issues = validate(nuevo);
+        if (issues.some((issue) => issue.level === 'error')) {
+          console.log(`✗ flujo rechazado: ${issues.filter((i) => i.level === 'error').length} errores`);
+          return void json(400, { ok: false, issues });
+        }
+
         await writeFile(file, `${JSON.stringify(nuevo, null, 2)}\n`);
         flow.set(nuevo);
         console.log(`⟳ flujo actualizado: ${nuevo.nodes.length} nodos, ${nuevo.edges.length} aristas`);
-        return void res.writeHead(204).end();
+        return void json(200, { ok: true, issues });
       } catch (err) {
-        return void json(400, { error: (err as Error).message });
+        return void json(400, { ok: false, issues: [
+          { level: 'error', where: 'json', message: (err as Error).message },
+        ] });
       }
     }
 

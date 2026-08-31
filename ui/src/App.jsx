@@ -9,31 +9,59 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import Calls from './Calls.jsx';
+import { edgeLabel, isFallback, layout } from './graph.js';
 
 const API = '/api/flow';
 
-/** Condición de una arista, recortada para caber en la etiqueta. */
-const shortWhen = (when) => (when ? JSON.stringify(when).slice(0, 36) : '*');
+/** Un color por tipo de nodo: se distinguen de un vistazo sin leer la etiqueta. */
+const TYPE = {
+  say: { bg: '#eef4ff', line: '#4a7fd4' },
+  gather: { bg: '#fff6e5', line: '#c8892a' },
+  dial: { bg: '#eaf6ec', line: '#3d9153' },
+  hangup: { bg: '#fdeceb', line: '#c0453d' },
+};
+const UNKNOWN = { bg: '#f4f4f4', line: '#999' };
+
+const nodeStyle = (type) => {
+  const { bg, line } = TYPE[type] ?? UNKNOWN;
+  return {
+    background: bg,
+    border: `1px solid ${line}`,
+    borderRadius: 6,
+    padding: 8,
+    width: 165,
+    fontSize: 12,
+  };
+};
 
 /** flow.json -> lo que entiende React Flow. */
 function toGraph(flow) {
+  const placed = layout(flow);
   return {
-    nodes: flow.nodes.map((node, i) => ({
+    nodes: flow.nodes.map((node) => ({
       id: node.id,
-      position: node.position ?? { x: 80, y: i * 100 },
+      position: node.position ?? placed.get(node.id),
+      style: nodeStyle(node.type),
       data: {
         label: `${node.id}  ·  ${node.type}`,
         type: node.type,
         config: node.config ?? {},
       },
     })),
-    edges: flow.edges.map((edge, i) => ({
-      id: `e${i}`,
-      source: edge.from,
-      target: edge.to,
-      label: shortWhen(edge.when),
-      data: { when: edge.when ?? null },
-    })),
+    edges: flow.edges.map((edge, i) => {
+      // Solo la salida por defecto de una bifurcación va discontinua. Una arista
+      // que es la única salida del nodo es una línea fija y no dice nada.
+      const fallback = isFallback(edge, flow.edges);
+      return {
+        id: `e${i}`,
+        source: edge.from,
+        target: edge.to,
+        label: edgeLabel(edge, flow.edges),
+        style: fallback ? { strokeDasharray: '5 4', stroke: '#999' } : undefined,
+        labelStyle: { fontSize: 11, fill: fallback ? '#999' : '#333' },
+        data: { when: edge.when ?? null },
+      };
+    }),
   };
 }
 
@@ -69,7 +97,22 @@ function traversed(call) {
   return { nodes: new Set(path), edges };
 }
 
-const LIT = '#1a7f37';
+const LIT = '#0969da';
+
+/** Recalcula etiqueta y estilo de todas las aristas: quién es "si no" depende
+ *  de cuántas salidas tenga su nodo, así que cambia al añadir o borrar. */
+function relabel(edges) {
+  const plain = edges.map((e) => ({ from: e.source, to: e.target, when: e.data?.when ?? null }));
+  return edges.map((edge, i) => {
+    const fallback = isFallback(plain[i], plain);
+    return {
+      ...edge,
+      label: edgeLabel(plain[i], plain),
+      style: fallback ? { strokeDasharray: '5 4', stroke: '#999' } : undefined,
+      labelStyle: { fontSize: 11, fill: fallback ? '#999' : '#333' },
+    };
+  });
+}
 
 export default function App() {
   const [meta, setMeta] = useState(null);
@@ -79,6 +122,7 @@ export default function App() {
   const [draft, setDraft] = useState('');
   const [status, setStatus] = useState('cargando…');
   const [call, setCall] = useState(null);
+  const [issues, setIssues] = useState([]);
 
   useEffect(() => {
     fetch(API)
@@ -100,7 +144,14 @@ export default function App() {
     () =>
       nodes.map((node) =>
         path.nodes.has(node.id)
-          ? { ...node, style: { border: `2px solid ${LIT}`, background: '#eaf6ec' } }
+          ? {
+              ...node,
+              style: {
+                ...node.style,
+                border: `2px solid ${LIT}`,
+                boxShadow: `0 0 0 3px ${LIT}33`,
+              },
+            }
           : node,
       ),
     [nodes, path],
@@ -117,12 +168,15 @@ export default function App() {
   );
 
   const onNodesChange = useCallback((cs) => setNodes((ns) => applyNodeChanges(cs, ns)), []);
-  const onEdgesChange = useCallback((cs) => setEdges((es) => applyEdgeChanges(cs, es)), []);
+  // Borrar una arista puede convertir a su hermana en línea fija, así que se
+  // reetiqueta el conjunto entero en cada cambio.
+  const onEdgesChange = useCallback(
+    (cs) => setEdges((es) => relabel(applyEdgeChanges(cs, es))),
+    [],
+  );
   const onConnect = useCallback(
     (conn) =>
-      setEdges((es) =>
-        addEdge({ ...conn, id: `e${Date.now()}`, label: '*', data: { when: null } }, es),
-      ),
+      setEdges((es) => relabel(addEdge({ ...conn, id: `e${Date.now()}`, data: { when: null } }, es))),
     [],
   );
 
@@ -160,16 +214,15 @@ export default function App() {
                   config: parsed.config ?? {},
                   label: `${n.id}  ·  ${parsed.type}`,
                 },
+                style: nodeStyle(parsed.type),
               }
             : n,
         ),
       );
     } else {
       setEdges((es) =>
-        es.map((e) =>
-          e.id === selected.id
-            ? { ...e, data: { when: parsed.when }, label: shortWhen(parsed.when) }
-            : e,
+        relabel(
+          es.map((e) => (e.id === selected.id ? { ...e, data: { when: parsed.when } } : e)),
         ),
       );
     }
@@ -183,6 +236,7 @@ export default function App() {
       {
         id,
         position: { x: 400, y: 40 + ns.length * 20 },
+        style: nodeStyle('say'),
         data: { label: `${id}  ·  say`, type: 'say', config: { media: 'sound:hello-world' } },
       },
     ]);
@@ -194,7 +248,13 @@ export default function App() {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(toFlow(meta, nodes, edges)),
     });
-    setStatus(res.ok ? `aplicado ${new Date().toLocaleTimeString()}` : `error ${res.status}`);
+    const body = await res.json().catch(() => ({ issues: [] }));
+    setIssues(body.issues ?? []);
+    setStatus(
+      res.ok
+        ? `aplicado ${new Date().toLocaleTimeString()}`
+        : 'NO se ha guardado: hay errores',
+    );
   };
 
   return (
@@ -258,7 +318,31 @@ export default function App() {
           </button>
         </div>
 
-        <small style={{ color: '#666' }}>{status}</small>
+        <small style={{ color: issues.some((i) => i.level === 'error') ? '#cf222e' : '#666' }}>
+          {status}
+        </small>
+
+        {issues.length > 0 && (
+          <ul style={{ margin: 0, padding: 0, listStyle: 'none', fontSize: 12 }}>
+            {issues.map((issue, i) => (
+              <li
+                key={i}
+                style={{
+                  padding: '5px 8px',
+                  marginBottom: 4,
+                  borderRadius: 4,
+                  borderLeft: `3px solid ${issue.level === 'error' ? '#cf222e' : '#9a6700'}`,
+                  background: issue.level === 'error' ? '#fdeceb' : '#fff8e5',
+                }}
+              >
+                <strong style={{ fontFamily: 'monospace' }}>{issue.where}</strong>
+                <br />
+                {issue.message}
+              </li>
+            ))}
+          </ul>
+        )}
+
         <small style={{ color: '#666' }}>
           Arrastra de un nodo a otro para crear una arista. Supr borra lo seleccionado.
         </small>

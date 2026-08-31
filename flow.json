@@ -7,6 +7,10 @@
       "type": "say",
       "config": {
         "media": "sound:hello-world"
+      },
+      "position": {
+        "x": 129.041633404517,
+        "y": -38.71707900356604
       }
     },
     {
@@ -15,6 +19,10 @@
       "config": {
         "media": "sound:demo-congrats",
         "timeout": 5000
+      },
+      "position": {
+        "x": 7.728119193343346,
+        "y": 147.3208743376918
       }
     },
     {
@@ -23,6 +31,10 @@
       "config": {
         "endpoint": "PJSIP/ana",
         "timeout": 20
+      },
+      "position": {
+        "x": -363.9558392408906,
+        "y": 273.1322603400692
       }
     },
     {
@@ -30,13 +42,10 @@
       "type": "say",
       "config": {
         "media": "sound:demo-thanks"
-      }
-    },
-    {
-      "id": "adios",
-      "type": "say",
-      "config": {
-        "media": "sound:vm-goodbye"
+      },
+      "position": {
+        "x": 485.2387602373246,
+        "y": 475.51742481616606
       }
     },
     {
@@ -44,11 +53,30 @@
       "type": "say",
       "config": {
         "media": "sound:vm-goodbye"
+      },
+      "position": {
+        "x": 357.9025892922629,
+        "y": 189.4029884380591
+      }
+    },
+    {
+      "id": "adios",
+      "type": "say",
+      "config": {
+        "media": "sound:vm-goodbye"
+      },
+      "position": {
+        "x": 715.2387602373246,
+        "y": 475.51742481616606
       }
     },
     {
       "id": "fin",
-      "type": "hangup"
+      "type": "hangup",
+      "position": {
+        "x": 36.981023329371055,
+        "y": 681.8436031158716
+      }
     }
   ],
   "edges": [
