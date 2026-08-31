@@ -12,6 +12,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import Calls from './Calls.jsx';
 import Trunks from './Trunks.jsx';
+import Versions from './Versions.jsx';
 import { edgeLabel, isFallback, layout } from './graph.js';
 
 const API = '/api/flow';
@@ -148,6 +149,16 @@ export default function App() {
   const [call, setCall] = useState(null);
   const [issues, setIssues] = useState([]);
   const [zoomed, setZoomed] = useState(null);
+  const [tab, setTab] = useState('calls');
+
+  // Lo que se está mirando en vez de editar: `null` mientras se edita, y
+  // `{version, flow}` cuando se mira algo publicado. El borrador (`meta`,
+  // `nodes`, `edges`) no se toca en ningún momento, así que al salir vuelve
+  // intacto sin necesidad de guardarlo ni de restaurarlo.
+  const [viewing, setViewing] = useState(null);
+  // Se mueve al publicar, para que la lista de versiones no siga diciendo que
+  // la viva es otra.
+  const [published, setPublished] = useState(0);
 
   useEffect(() => {
     fetch(API)
@@ -164,10 +175,14 @@ export default function App() {
 
   const path = useMemo(() => traversed(call), [call]);
 
+  const viewed = useMemo(() => (viewing ? toGraph(viewing.flow) : null), [viewing]);
+  const shownNodes = viewed ? viewed.nodes : nodes;
+  const shownEdges = viewed ? viewed.edges : edges;
+
   // El camino recorrido se pinta encima, sin tocar el grafo que se va a guardar.
   const litNodes = useMemo(
     () =>
-      nodes.map((node) =>
+      shownNodes.map((node) =>
         path.nodes.has(node.id)
           ? {
               ...node,
@@ -179,31 +194,105 @@ export default function App() {
             }
           : node,
       ),
-    [nodes, path],
+    [shownNodes, path],
   );
 
   const litEdges = useMemo(
     () =>
-      edges.map((edge) =>
+      shownEdges.map((edge) =>
         path.edges.has(`${edge.source}→${edge.target}`)
           ? { ...edge, animated: true, style: { stroke: LIT, strokeWidth: 2 } }
           : edge,
       ),
-    [edges, path],
+    [shownEdges, path],
   );
 
-  const onNodesChange = useCallback((cs) => setNodes((ns) => applyNodeChanges(cs, ns)), []);
+  // Mientras se mira una versión publicada, los ids que llegan en los cambios
+  // son los del grafo mirado. Aplicarlos al borrador lo corrompería en silencio,
+  // así que se ignoran: lo que se mira no se edita.
+  const onNodesChange = useCallback(
+    (cs) => !viewing && setNodes((ns) => applyNodeChanges(cs, ns)),
+    [viewing],
+  );
   // Borrar una arista puede convertir a su hermana en línea fija, así que se
   // reetiqueta el conjunto entero en cada cambio.
   const onEdgesChange = useCallback(
-    (cs) => setEdges((es) => relabel(applyEdgeChanges(cs, es))),
-    [],
+    (cs) => !viewing && setEdges((es) => relabel(applyEdgeChanges(cs, es))),
+    [viewing],
   );
   const onConnect = useCallback(
     (conn) =>
+      !viewing &&
       setEdges((es) => relabel(addEdge({ ...conn, id: `e${Date.now()}`, data: { when: null } }, es))),
-    [],
+    [viewing],
   );
+
+  /** Trae el grafo de una versión publicada. `null` si no se puede leer. */
+  const fetchVersion = async (version) => {
+    const res = await fetch(`/api/flows?version=${version}`);
+    if (!res.ok) {
+      setStatus(`no se pudo leer la v${version}`);
+      return null;
+    }
+    return res.json();
+  };
+
+  /**
+   * Selecciona una llamada: primero trae el grafo de su versión y solo entonces
+   * la enciende, para no iluminar ni un frame sobre el grafo equivocado.
+   */
+  const selectCall = async (llamada) => {
+    if (!llamada) {
+      setViewing(null);
+      setCall(null);
+      return;
+    }
+    // Sin versión guardada no hay grafo que traer: se enciende sobre lo que
+    // haya, avisando de que puede no corresponder.
+    if (llamada.flowVersion == null) {
+      setViewing(null);
+      setCall(llamada);
+      return;
+    }
+    const flow = await fetchVersion(llamada.flowVersion);
+    if (!flow) return;
+    setSelected(null);
+    setViewing({ version: llamada.flowVersion, flow });
+    setCall(llamada);
+  };
+
+  /** Dibuja una versión publicada, en solo lectura y sin encender nada. */
+  const viewVersion = async (version) => {
+    const flow = await fetchVersion(version);
+    if (!flow) return;
+    setCall(null);
+    setSelected(null);
+    setViewing({ version, flow });
+  };
+
+  /**
+   * Trae una versión publicada al borrador. No publica nada: se edita si hace
+   * falta y se aplica con el botón de siempre, que crea versión nueva.
+   */
+  const loadIntoEditor = async (version) => {
+    const flow = await fetchVersion(version);
+    if (!flow) return;
+    const graph = toGraph(flow);
+    setMeta({ start: flow.start, timezone: flow.timezone });
+    setNodes(graph.nodes);
+    setEdges(graph.edges);
+    setViewing(null);
+    setCall(null);
+    setSelected(null);
+    setIssues([]);
+    setStatus(`v${version} cargada en el editor — falta aplicar al motor`);
+  };
+
+  /** Vuelve al borrador, que no se ha tocado en ningún momento. */
+  const stopViewing = () => {
+    setViewing(null);
+    setCall(null);
+  };
 
   const select = (kind, element) => {
     setSelected({ kind, id: element.id });
@@ -287,39 +376,104 @@ export default function App() {
     });
     const body = await res.json().catch(() => ({ issues: [] }));
     setIssues(body.issues ?? []);
+    if (res.ok) setPublished((n) => n + 1);
     setStatus(
       res.ok
-        ? `aplicado ${new Date().toLocaleTimeString()}`
+        ? `v${body.version} aplicada ${new Date().toLocaleTimeString()}`
         : 'NO se ha guardado: hay errores',
     );
   };
 
   return (
     <div style={{ display: 'flex', height: '100vh', fontFamily: 'system-ui, sans-serif' }}>
-      <Calls selected={call} onSelect={setCall} />
+      <aside
+        style={{
+          width: 260,
+          borderRight: '1px solid #ddd',
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
+        }}
+      >
+        <div style={{ display: 'flex', borderBottom: '1px solid #ddd' }}>
+          {[['calls', 'Llamadas'], ['versions', 'Versiones']].map(([id, texto]) => (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              style={{
+                flex: 1,
+                padding: '8px 0',
+                border: 0,
+                cursor: 'pointer',
+                font: 'inherit',
+                fontSize: 13,
+                fontWeight: tab === id ? 600 : 400,
+                color: tab === id ? '#0969da' : '#666',
+                background: tab === id ? '#fff' : '#f6f8fa',
+                borderBottom: `2px solid ${tab === id ? '#0969da' : 'transparent'}`,
+              }}
+            >
+              {texto}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'calls' ? (
+          <Calls selected={call} onSelect={selectCall} />
+        ) : (
+          <Versions
+            viewing={viewing}
+            refresh={published}
+            onView={viewVersion}
+            onLoad={loadIntoEditor}
+          />
+        )}
+      </aside>
 
       <div style={{ flex: 1, position: 'relative', minWidth: 0 }}>
-        {call && (
+        {(call || viewing) && (
           <div
             style={{
               position: 'absolute',
               zIndex: 5,
               top: 10,
               left: 10,
+              right: 10,
               background: '#fff',
-              border: `1px solid ${LIT}`,
+              border: `1px solid ${viewing ? LIT : '#9a6700'}`,
               borderRadius: 4,
               padding: '6px 10px',
               fontSize: 12,
               display: 'flex',
               gap: 10,
               alignItems: 'center',
+              flexWrap: 'wrap',
             }}
           >
-            <span style={{ fontFamily: 'monospace' }}>
-              {call.trace.map((step) => step.node).join(' → ')}
-            </span>
-            <button onClick={() => setCall(null)}>apagar</button>
+            {viewing && <strong>v{viewing.version}</strong>}
+            {call ? (
+              <span style={{ fontFamily: 'monospace' }}>
+                {call.trace.map((step) => step.node).join(' → ')}
+              </span>
+            ) : (
+              <span style={{ color: '#666' }}>versión publicada · solo lectura</span>
+            )}
+            {call && !viewing && (
+              <span style={{ color: '#9a6700' }}>
+                sin versión guardada: este grafo puede no ser el que recorrió
+              </span>
+            )}
+            {viewing && (
+              <button
+                onClick={() => loadIntoEditor(viewing.version)}
+                style={{ marginLeft: 'auto' }}
+              >
+                cargar en el editor
+              </button>
+            )}
+            <button onClick={stopViewing} style={viewing ? undefined : { marginLeft: 'auto' }}>
+              {viewing ? 'volver a mi flujo' : 'apagar'}
+            </button>
           </div>
         )}
 
@@ -330,12 +484,17 @@ export default function App() {
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           nodeTypes={nodeTypes}
-          onNodeClick={(_, node) => select('node', node)}
+          nodesDraggable={!viewing}
+          nodesConnectable={!viewing}
+          elementsSelectable={!viewing}
+          deleteKeyCode={viewing ? null : undefined}
+          onNodeClick={(_, node) => !viewing && select('node', node)}
           onNodeDoubleClick={(_, node) => {
+            if (viewing) return;
             select('node', node);
             if (node.data.type === 'entry') setZoomed(node.id);
           }}
-          onEdgeClick={(_, edge) => select('edge', edge)}
+          onEdgeClick={(_, edge) => !viewing && select('edge', edge)}
           fitView
         >
           <Background />
@@ -354,8 +513,8 @@ export default function App() {
         }}
       >
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={addNode}>+ nodo</button>
-          <button onClick={push} style={{ fontWeight: 600 }}>
+          <button onClick={addNode} disabled={!!viewing}>+ nodo</button>
+          <button onClick={push} disabled={!!viewing} style={{ fontWeight: 600 }}>
             Aplicar al motor
           </button>
         </div>
@@ -391,7 +550,12 @@ export default function App() {
 
         <hr style={{ width: '100%', border: 0, borderTop: '1px solid #eee' }} />
 
-        {selected ? (
+        {viewing ? (
+          <small style={{ color: '#666' }}>
+            Estás mirando la v{viewing.version}, que ya está publicada y no se puede editar.
+            Para partir de ella, cárgala en el editor.
+          </small>
+        ) : selected ? (
           <>
             <strong>
               {selected.kind === 'node' ? 'Nodo' : 'Arista'} {selected.id}

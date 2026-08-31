@@ -9,8 +9,12 @@ const clock = (iso) =>
   new Date(iso).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
 /**
- * Lista de llamadas. Pinchar una la selecciona y el grafo enciende su camino;
- * volver a pincharla lo apaga.
+ * Lista de llamadas. Pinchar una la selecciona y el grafo enciende su camino
+ * sobre la versión con la que corrió; volver a pincharla lo apaga.
+ *
+ * Trae todas las llamadas, sin filtrar por versión: esconder las de versiones
+ * anteriores sería quitarlas de en medio justo después de publicar, que es
+ * cuando más falta hacen.
  */
 export default function Calls({ selected, onSelect }) {
   const [calls, setCalls] = useState([]);
@@ -29,22 +33,13 @@ export default function Calls({ selected, onSelect }) {
   useEffect(load, [load]);
 
   return (
-    <aside
-      style={{
-        width: 260,
-        borderRight: '1px solid #ddd',
-        display: 'flex',
-        flexDirection: 'column',
-        minHeight: 0,
-      }}
-    >
+    <>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 10 }}>
-        <strong style={{ fontSize: 13 }}>Llamadas</strong>
+        <small style={{ color: '#666' }}>{status}</small>
         <button onClick={load} style={{ marginLeft: 'auto', fontSize: 12 }}>
           Recargar
         </button>
       </div>
-      <small style={{ color: '#666', padding: '0 10px 8px' }}>{status}</small>
 
       <div style={{ overflowY: 'auto', flex: 1, padding: '0 8px 8px' }}>
         {calls.map((call) => {
@@ -79,12 +74,13 @@ export default function Calls({ selected, onSelect }) {
                 <span style={{ color: '#666' }}> → {call.did ?? '?'} · {seconds(call)}s</span>
               </div>
               <div style={{ color: '#888', fontFamily: 'monospace', fontSize: 11, marginTop: 2 }}>
-                {call.trace.length} pasos
+                {call.trace.length} pasos ·{' '}
+                {call.flowVersion == null ? 'sin versión' : `v${call.flowVersion}`}
               </div>
             </button>
           );
         })}
       </div>
-    </aside>
+    </>
   );
 }

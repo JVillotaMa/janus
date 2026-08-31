@@ -165,7 +165,7 @@ Y marcas `100` desde un softphone registrado como `jaime`.
 | Comando | Qué hace |
 |---|---|
 | `pnpm start` | El motor: conecta con ARI, configura las troncales y sirve la API en :3000 |
-| `pnpm test` | Los 117 tests. No necesitan Asterisk ni red |
+| `pnpm test` | Los 137 tests. No necesitan Asterisk ni red |
 | `pnpm typecheck` | `tsc --noEmit`. No compila, solo comprueba |
 | `pnpm calls` | Las últimas llamadas con su traza. `pnpm calls 50` para más |
 | `cd ui && npm run dev` | El editor de flujos en :5173 |
@@ -195,6 +195,8 @@ Desde fuera:
 ```bash
 curl -u janus:janus http://localhost:8088/ari/asterisk/info   # ¿ARI vivo?
 curl http://localhost:3000/api/flow                            # el flujo actual
+curl http://localhost:3000/api/flows                           # las versiones publicadas
+curl 'http://localhost:3000/api/flows?version=2'               # el grafo de la v2
 curl http://localhost:3000/api/trunks                          # las troncales y su estado
 ```
 
@@ -204,7 +206,7 @@ curl http://localhost:3000/api/trunks                          # las troncales y
 src/            el motor (TypeScript, sin build)
 flow.json       la semilla de una base vacía. El grafo vive en la BBDD
 janus.db        flujos, troncales y trazas (SQLite). Fuera del repo
-tests/          117 tests deterministas
+tests/          137 tests deterministas
 ui/             el editor (React Flow + Vite)
 asterisk-config/etc     config de Asterisk, montada en el contenedor. En el repo
 asterisk-config/sounds  los audios. Fuera del repo: pesan y se regeneran
@@ -225,7 +227,13 @@ call_steps(call_id, seq, node_id, entered_at, vars jsonb)   -- el trace
 `graph` = `{nodes: [{id, type, config}], edges: [{from, to, when}]}`
 
 **Versionado inmutable.** Publicar crea versión nueva, y cada llamada se ancla a
-la versión con la que entró. Despliegues seguros gratis.
+la versión con la que entró — capturada al entrar, no al colgar. Despliegues
+seguros gratis, y la traza se pinta sobre el grafo que esa llamada recorrió de
+verdad y no sobre el que haya ahora.
+
+Volver a una versión anterior es cargarla en el editor y publicarla otra vez:
+sale una versión nueva y las viejas siguen intactas. El invariante no hay que
+defenderlo, se cumple solo.
 
 **Condiciones:** nada de DSL propio. `{var, op, value}` con AND/OR, o
 directamente [jsonlogic](https://jsonlogic.com) — ya existe, ya tiene evaluador
@@ -263,6 +271,8 @@ Por orden de probabilidad de morder:
 3. **Debuggabilidad.** Un flujo que falla sin traza es magia negra para el
    usuario. `call_steps` pintado sobre el mismo grafo: "entró aquí, saltó allí,
    colgó". Barato, y es lo que evita acabar de soporte técnico de cada cliente.
+   Ojo con el detalle que lo arruina: pintarlo sobre el grafo **actual** en vez
+   de sobre el que corrió la llamada. Por eso cada llamada guarda su versión.
 4. **Simulador.** Recorrer el grafo con inputs falsos sin llamar. Cuesta poco y
    multiplica la usabilidad.
 

@@ -25,6 +25,14 @@ export interface CallRecord {
   id: string;
   caller: string | null;
   did: string | null;
+  /**
+   * Versión de flujo con la que entró la llamada, o `null` si no se sabe.
+   *
+   * `null` son las llamadas anteriores a que esto se guardase. No se les
+   * inventa una: la traza es una lista de ids de nodo, y pintarla sobre el
+   * grafo equivocado es justo el fallo silencioso que esta columna quita.
+   */
+  flowVersion: number | null;
   startedAt: Date;
   endedAt: Date;
   outcome: Outcome;
@@ -45,11 +53,29 @@ export interface FlowVersion {
   publishedAt: Date;
 }
 
+/**
+ * Una versión en la lista, sin el grafo.
+ *
+ * Lleva los contadores porque una columna de números y fechas no deja
+ * reconocer la versión que buscas; y no lleva el grafo porque con doscientas
+ * versiones publicadas serían cientos de kilobytes para pintar una lista.
+ */
+export interface FlowSummary {
+  version: number;
+  publishedAt: Date;
+  nodes: number;
+  edges: number;
+}
+
 export interface Store {
   /** Publica una versión nueva. Nunca actualiza: las versiones son inmutables. */
   publish(graph: Flow): FlowVersion;
   /** La última versión publicada, o `null` si la base está vacía. */
   latestFlow(): FlowVersion | null;
+  /** Las versiones publicadas, de la más reciente a la más antigua. */
+  flowVersions(): FlowSummary[];
+  /** Una versión concreta, o `null` si nunca se publicó. */
+  flowAt(version: number): FlowVersion | null;
   /** Las troncales guardadas, con contraseña: es lo que necesita el generador. */
   trunks(): Trunk[];
   /**
@@ -78,13 +104,14 @@ const SCHEMA = `
     match_ip TEXT
   );
   CREATE TABLE IF NOT EXISTS calls (
-    id         TEXT PRIMARY KEY,
-    caller     TEXT,
-    did        TEXT,
-    started_at TEXT NOT NULL,
-    ended_at   TEXT NOT NULL,
-    outcome    TEXT NOT NULL,
-    vars       TEXT NOT NULL
+    id           TEXT PRIMARY KEY,
+    caller       TEXT,
+    did          TEXT,
+    flow_version INTEGER,
+    started_at   TEXT NOT NULL,
+    ended_at     TEXT NOT NULL,
+    outcome      TEXT NOT NULL,
+    vars         TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS call_steps (
     call_id TEXT NOT NULL,
@@ -115,6 +142,7 @@ interface CallRow {
   id: string;
   caller: string | null;
   did: string | null;
+  flow_version: number | null;
   started_at: string;
   ended_at: string;
   outcome: string;
@@ -127,9 +155,20 @@ export function openStore(file: string): Store {
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA);
 
+  // Las bases creadas antes de que la llamada guardase su versión no tienen la
+  // columna, y `CREATE TABLE IF NOT EXISTS` no la añade. Se pregunta antes en
+  // vez de envolver el ALTER en un try/catch: ese catch se tragaría también una
+  // base corrupta o sin permisos y dejaría el motor escribiendo contra una
+  // tabla que no es la que cree.
+  const columns = (db.prepare('PRAGMA table_info(calls)').all() as { name: string }[]);
+  if (!columns.some((column) => column.name === 'flow_version')) {
+    db.exec('ALTER TABLE calls ADD COLUMN flow_version INTEGER');
+  }
+
   const insertCall = db.prepare(
-    `INSERT OR REPLACE INTO calls (id, caller, did, started_at, ended_at, outcome, vars)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO calls
+       (id, caller, did, flow_version, started_at, ended_at, outcome, vars)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const clearSteps = db.prepare('DELETE FROM call_steps WHERE call_id = ?');
   const insertStep = db.prepare(
@@ -137,6 +176,8 @@ export function openStore(file: string): Store {
   );
   const insertFlow = db.prepare('INSERT INTO flows (graph, published_at) VALUES (?, ?)');
   const selectFlow = db.prepare('SELECT * FROM flows ORDER BY version DESC LIMIT 1');
+  const selectFlows = db.prepare('SELECT * FROM flows ORDER BY version DESC');
+  const selectFlowAt = db.prepare('SELECT * FROM flows WHERE version = ?');
   const selectTrunks = db.prepare('SELECT * FROM trunks ORDER BY name');
   const clearTrunks = db.prepare('DELETE FROM trunks');
   const insertTrunk = db.prepare(
@@ -145,6 +186,15 @@ export function openStore(file: string): Store {
   );
   const selectCalls = db.prepare('SELECT * FROM calls ORDER BY started_at DESC, rowid DESC LIMIT ?');
   const selectSteps = db.prepare('SELECT node, at FROM call_steps WHERE call_id = ? ORDER BY seq');
+
+  const toVersion = (row: FlowRow | undefined): FlowVersion | null =>
+    row
+      ? {
+          version: row.version,
+          graph: JSON.parse(row.graph) as Flow,
+          publishedAt: new Date(row.published_at),
+        }
+      : null;
 
   const readTrunks = (): Trunk[] =>
     (selectTrunks.all() as TrunkRow[]).map((row) => ({
@@ -177,6 +227,7 @@ export function openStore(file: string): Store {
       call.id,
       call.caller,
       call.did,
+      call.flowVersion,
       call.startedAt.toISOString(),
       call.endedAt.toISOString(),
       call.outcome,
@@ -196,16 +247,24 @@ export function openStore(file: string): Store {
       return { version: Number(lastInsertRowid), graph, publishedAt };
     },
 
-    latestFlow() {
-      const row = selectFlow.get() as FlowRow | undefined;
-      return row
-        ? {
-            version: row.version,
-            graph: JSON.parse(row.graph) as Flow,
-            publishedAt: new Date(row.published_at),
-          }
-        : null;
+    latestFlow: () => toVersion(selectFlow.get() as FlowRow | undefined),
+
+    // Contar nodos y aristas obliga a parsear el grafo de cada fila. Es barato
+    // con las versiones que va a haber; si algún día son miles, se paginan o
+    // los contadores pasan a ser columnas que se escriben al publicar.
+    flowVersions() {
+      return (selectFlows.all() as FlowRow[]).map((row) => {
+        const graph = JSON.parse(row.graph) as Flow;
+        return {
+          version: row.version,
+          publishedAt: new Date(row.published_at),
+          nodes: graph.nodes.length,
+          edges: graph.edges.length,
+        };
+      });
     },
+
+    flowAt: (version) => toVersion(selectFlowAt.get(version) as FlowRow | undefined),
 
     trunks: readTrunks,
 
@@ -226,6 +285,7 @@ export function openStore(file: string): Store {
         id: row.id,
         caller: row.caller,
         did: row.did,
+        flowVersion: row.flow_version,
         startedAt: new Date(row.started_at),
         endedAt: new Date(row.ended_at),
         outcome: row.outcome as Outcome,

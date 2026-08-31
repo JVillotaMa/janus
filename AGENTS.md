@@ -153,17 +153,21 @@ src/
   calls.ts       script: imprime las ultimas llamadas
   main.ts        entrypoint: conecta ARI y ata las piezas
 flow.json        SOLO la semilla de una base vacia. El grafo vive en la BBDD
-tests/           117 tests, deterministas, sin Asterisk   -> pnpm test
+tests/           137 tests, deterministas, sin Asterisk   -> pnpm test
   fake-channel.ts    dobles de canal, bridge y cliente ARI
   interpreter.test.ts  bucle, aristas, horario, cancelacion, nodo entry
   nodes.test.ts        say / gather / hangup, con timers simulados
   dial.test.ts         originate, bridge, causas Q.931, handback
   time.test.ts         zonas IANA, DST, weekday ISO
-  store.test.ts        flows, trunks y llamadas, con base en memoria
+  store.test.ts        flows, trunks, llamadas y la migracion de una base vieja
+  server.test.ts       la API sobre un puerto de verdad, sin Asterisk
   validate.test.ts     reglas del grafo y del nodo de entrada
   pjsip.test.ts        los dos modos de troncal, y el dialplan del repo
   asterisk.test.ts     escritura del fichero generado, sobre un tmpdir
 ui/              editor React Flow (Vite)   -> cd ui && npm run dev
+  App.jsx            el lienzo, el borrador y lo que se esta mirando
+  Calls.jsx          las llamadas, cada una con su version
+  Versions.jsx       las versiones publicadas: ver y cargar en el editor
 asterisk-config/etc    config de Asterisk, versionada y montada en el contenedor
 asterisk-config/sounds sonidos core, montados en /var/lib/asterisk/sounds
 ```
@@ -186,14 +190,19 @@ El enrutado por horario NO es un tipo de nodo: `callVars` siembra `hhmm`,
 comparan con jsonlogic normal. La zona sale de `flow.timezone` (IANA, nunca un
 offset) y se calcula una sola vez desde `ctx.startedAt`, no en cada nodo.
 
-El motor sirve cinco rutas con `node:http`, **solo en `127.0.0.1`**:
+El motor sirve seis rutas con `node:http`, **solo en `127.0.0.1`**:
 
 ```
-GET/PUT /api/flow           el grafo. El PUT publica version nueva
-GET     /api/calls          las ultimas llamadas con su traza
+GET/PUT /api/flow           el grafo vivo. El PUT publica version nueva
+GET     /api/flows          las versiones publicadas; con ?version=N, ese grafo
+GET     /api/calls          las ultimas llamadas con su traza y su version
 GET/PUT /api/trunks         las troncales. El PUT recarga Asterisk
 GET     /api/trunks/config  la config generada, con las contrasenas tapadas
 ```
+
+Seis es el techo que marca el comentario `ponytail:` de `server.ts`: la
+siguiente ruta que haga falta se atiende migrando a Hono, no anadiendo otro
+`if`.
 
 No hay autenticacion y no la va a haber mientras el puerto no salga de la
 maquina: se llega por tunel SSH, que autentica mejor que nada que escribieramos.
@@ -227,8 +236,32 @@ si no es interactivo).
 Se descarto `node:sqlite`: hace lo mismo sin dependencias, pero es experimental.
 
 El grafo vive en la tabla `flows`, append-only: publicar inserta, nunca
-actualiza. `flow.json` solo siembra la version 1 de una base vacia. `calls`
-todavia no guarda con que version entro la llamada.
+actualiza. `flow.json` solo siembra la version 1 de una base vacia.
+
+**Cada llamada guarda con que version entro** (`calls.flow_version`), capturada
+al entrar y no al guardarla: una llamada de diez minutos durante la cual se
+publica dos veces se guarda con la que recorrio. Version y grafo viajan en el
+mismo objeto (`FlowVersion`), asi que capturar uno captura los dos y no pueden
+separarse. Las llamadas anteriores a esto tienen `NULL`, que es la verdad: no se
+les inventa una version, porque pintar la traza sobre el grafo equivocado es
+justo el fallo que esta columna quita.
+
+Cual es la version en vivo no se guarda en ningun sitio: **es la mas alta**,
+porque publicar es lo unico que la cambia e inserta al final. Por eso
+`GET /api/flow` sigue devolviendo el grafo pelado. El dia que el motor pueda
+quedarse fijado a una version que no sea la ultima, eso deja de valer.
+
+Una base creada antes de esa columna se migra sola al abrirla, comprobando con
+`PRAGMA table_info` antes del `ALTER TABLE`. **No lo cambies por un `try/catch`
+alrededor del ALTER**: ese catch se traga tambien una base corrupta o sin
+permisos y deja el motor escribiendo contra una tabla que no es la que cree.
+
+En el editor, mirar una llamada o una version publicada **no toca el borrador**:
+el lienzo dibuja uno u otro (`viewing`) y lo que estabas editando sigue en su
+sitio. Mientras se mira, todo es de solo lectura — una version publicada es
+inmutable, y dejar editarla acabaria publicando una mezcla. Volver a una version
+anterior es cargarla en el editor y publicarla con el boton de siempre, que crea
+version nueva; no hay ruta de "restaurar" ni republicado de un click.
 
 ## Troncales: el motor configura Asterisk
 

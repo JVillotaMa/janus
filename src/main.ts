@@ -12,7 +12,7 @@ import { APP, DIALED } from './nodes.ts';
 import { endpointStates, reload, writeTrunks } from './asterisk.ts';
 import { serveApi } from './server.ts';
 import { openStore } from './store.ts';
-import type { Outcome } from './store.ts';
+import type { FlowVersion, Outcome } from './store.ts';
 import { callVars } from './time.ts';
 import type { AriAdmin, AriClient, Channel, Ctx, Flow, Trunk } from './types.ts';
 
@@ -20,11 +20,14 @@ const store = openStore(new URL('../janus.db', import.meta.url).pathname);
 
 // La fuente del grafo es la base. Mutable: la UI publica y lo reemplaza en
 // caliente, y cada llamada se queda con el que había al entrar.
+//
+// Se lleva la versión junto al grafo, no el grafo pelado: es lo que la llamada
+// guarda para que su traza se pinte luego sobre el grafo que de verdad recorrió.
 // ponytail: flow.json ya solo siembra la primera arrancada. Cuando toda base en
 // uso tenga su versión 1, se borran el fichero y estas dos líneas.
 const seed = async () =>
   JSON.parse(await readFile(new URL('../flow.json', import.meta.url), 'utf8')) as Flow;
-let flow: Flow = (store.latestFlow() ?? store.publish(await seed())).graph;
+let flow: FlowVersion = store.latestFlow() ?? store.publish(await seed());
 
 const client = (await ari.connect(
   'http://localhost:8088',
@@ -69,7 +72,7 @@ client.on('StasisStart', async (event: { args?: string[] }, channel: Channel) =>
     vars: {
       caller: channel.caller?.number ?? null,
       did: event.args?.[0] ?? null,
-      ...callVars(startedAt, flowAtStart.timezone ?? 'UTC'),
+      ...callVars(startedAt, flowAtStart.graph.timezone ?? 'UTC'),
     },
     trace: [],
   };
@@ -78,7 +81,7 @@ client.on('StasisStart', async (event: { args?: string[] }, channel: Channel) =>
   let outcome: Outcome = 'completed';
   try {
     await channel.answer();
-    await run(channel, flowAtStart, ctx);
+    await run(channel, flowAtStart.graph, ctx);
   } catch (err) {
     if (err instanceof Hungup) {
       outcome = 'hungup';
@@ -93,6 +96,7 @@ client.on('StasisStart', async (event: { args?: string[] }, channel: Channel) =>
       id: channel.id,
       caller: ctx.vars.caller as string | null,
       did: ctx.vars.did as string | null,
+      flowVersion: flowAtStart.version,
       startedAt,
       endedAt: new Date(),
       outcome,

@@ -7,12 +7,11 @@
 
 import { createServer } from 'node:http';
 import type { IncomingMessage } from 'node:http';
-import type { Store } from './store.ts';
-import type { Trunk } from './types.ts';
+import type { FlowVersion, Store } from './store.ts';
+import type { Trunk,Flow } from './types.ts';
 import { renderPjsip } from './pjsip.ts';
 import { validate } from './validate.ts';
 import type { Issue } from './validate.ts';
-import type { Flow } from './types.ts';
 
 /**
  * La API no sale de la máquina.
@@ -28,10 +27,15 @@ import type { Flow } from './types.ts';
  */
 const HOST = '127.0.0.1';
 
-/** Lee y reemplaza el flujo vivo del motor. */
+/**
+ * Lee y reemplaza el flujo vivo del motor.
+ *
+ * Lleva la versión además del grafo: es lo que cada llamada guarda al entrar
+ * para que su traza se pinte después sobre el grafo que recorrió.
+ */
 export interface FlowStore {
-  get(): Flow;
-  set(flow: Flow): void;
+  get(): FlowVersion;
+  set(flow: FlowVersion): void;
 }
 
 /** Lo que la API necesita de Asterisk. Lo ata `main.ts`. */
@@ -58,6 +62,24 @@ export function serveApi(flow: FlowStore, store: Store, asterisk: Provisioner, p
 
     if (url.pathname === '/api/calls' && req.method === 'GET') {
       return void json(200, store.recent(Number(url.searchParams.get('limit')) || 20));
+    }
+
+    // Las versiones publicadas: sin `version`, la lista; con él, ese grafo. Una
+    // sola ruta para las dos lecturas, que es lo que deja `server.ts` en seis.
+    //
+    // La versión en vivo no se dice, se deduce: publicar es lo único que la
+    // cambia e inserta al final, así que es la primera de la lista.
+    if (url.pathname === '/api/flows' && req.method === 'GET') {
+      const pedida = url.searchParams.get('version');
+      if (pedida === null) return void json(200, store.flowVersions());
+
+      const version = store.flowAt(Number(pedida));
+      if (!version) {
+        return void json(404, { ok: false, issues: [
+          { level: 'error', where: `v${pedida}`, message: 'esa versión no está publicada' },
+        ] });
+      }
+      return void json(200, version.graph);
     }
 
     // La config generada, para poder verla desde la UI sin entrar por SSH. Las
@@ -118,7 +140,9 @@ export function serveApi(flow: FlowStore, store: Store, asterisk: Provisioner, p
 
     if (url.pathname !== '/api/flow') return void res.writeHead(404).end();
 
-    if (req.method === 'GET') return void json(200, flow.get());
+    // El grafo pelado, como siempre: quién es la versión viva se sabe por
+    // `/api/flows`, y así el editor no se entera de este cambio.
+    if (req.method === 'GET') return void json(200, flow.get().graph);
 
     if (req.method === 'PUT') {
       try {
@@ -132,10 +156,12 @@ export function serveApi(flow: FlowStore, store: Store, asterisk: Provisioner, p
           return void json(400, { ok: false, issues });
         }
 
-        const { version } = store.publish(nuevo);
-        flow.set(nuevo);
-        console.log(`⟳ flujo v${version}: ${nuevo.nodes.length} nodos, ${nuevo.edges.length} aristas`);
-        return void json(200, { ok: true, version, issues });
+        const publicado = store.publish(nuevo);
+        flow.set(publicado);
+        console.log(
+          `⟳ flujo v${publicado.version}: ${nuevo.nodes.length} nodos, ${nuevo.edges.length} aristas`,
+        );
+        return void json(200, { ok: true, version: publicado.version, issues });
       } catch (err) {
         return void json(400, { ok: false, issues: [jsonRoto(err as Error)] });
       }
