@@ -19,7 +19,7 @@ El caso concreto que lo motiva: agentes de voz IA. El agente se conecta como
 endpoint SIP, así que meterlo en una llamada es trivial — un `Dial` y ya. Pero
 un `Dial` es un **handoff**, no una orquestación. En cuanto entregas la llamada
 al agente, sales del bucle y pierdes tres cosas:
-
+  
 1. **Devolución de control.** El agente cualifica y luego hay que enrutar:
    comercial a una cola, cabreado a un supervisor, quiere cita a la agenda. Con
    un `Dial` esa decisión la toma el agente por dentro, así que la lógica de
