@@ -459,6 +459,21 @@ Los tipos de ARI (`Channel`, `AriClient`, `Bridge`) son **estructurales** y
 describen solo lo que el motor usa. Por eso los dobles de `tests/` encajan sin
 heredar de nada ni castear.
 
+**`install.sh` deja una caja lista, y la contraseña no es opcional.** Instala
+Asterisk, el motor como servicio, el editor construido, Caddy con HTTPS y
+`basic_auth`, y el cortafuegos. Es un solo camino a proposito: la contrasena la
+genera el script y sin ella no escribe el Caddyfile, asi que no existe la
+secuencia que deja la caja funcionando y abierta.
+
+La contrasena cubre **todo el sitio, /api incluida**. Eso no es un detalle: el
+navegador reenvia las credenciales solo en cada peticion del mismo origen, asi
+que la UI funciona sin tocar nada y un `curl` sin credenciales se queda en un 401
+sin llegar a Janus. **No se filtra por IP de origen** — con un proxy delante todo
+llega de `127.0.0.1`, que es lo que ya avisaba el comentario de `server.ts`.
+
+El script **reescribe las reglas de `ufw`**: relanzarlo sin pasarle los rangos del
+operador deja el 5060 cerrado y las llamadas dejan de entrar.
+
 Levantar el laboratorio:
 
 ```bash

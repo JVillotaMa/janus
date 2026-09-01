@@ -113,7 +113,26 @@ handback, y con ARI sale gratis.
 
 Nada de esto necesita build. Node 24 ejecuta TypeScript directamente.
 
-### Primera vez
+### En una máquina de verdad
+
+Un solo comando deja la caja lista: Asterisk, el motor, el editor servido por
+HTTPS con contraseña, y el cortafuegos cerrado.
+
+```bash
+sudo ./install.sh                              # sin troncal de operador todavía
+sudo ./install.sh 54.172.60.0/30,54.244.51.0/30 # con los rangos SIP del operador
+```
+
+Al terminar imprime la URL, el usuario y la contraseña, y los deja en
+`/root/janus-acceso.txt`. **No hay camino que deje la caja funcionando sin
+contraseña**: la genera el propio script y sin ella no escribe la configuración
+de Caddy.
+
+El nombre sale de la IP —`67-205-154-32.sslip.io`— así que hay certificado de
+Let's Encrypt sin registrar ningún dominio. Janus sigue escuchando solo en
+`127.0.0.1`: quien sale a internet es Caddy.
+
+### Para desarrollar, primera vez
 
 ```bash
 pnpm install
