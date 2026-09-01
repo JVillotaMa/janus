@@ -156,3 +156,35 @@ test('el dialplan del repo define los dos transportes', async () => {
     assert.ok(new RegExp(`^\\${seccion.slice(0, -1)}\\]`, 'm').test(conf), `falta ${seccion}`);
   }
 });
+
+// ─── Los códecs ──────────────────────────────────────────────────────────────
+
+// Ofrecer solo alaw es lo que hace que un proveedor que solo tiene ulaw —Twilio,
+// por defecto— reciba un `488 Not Acceptable Here` y la llamada no llegue nunca
+// al flujo. Los dos van a 64 kbit/s: ofrecer ambos no cuesta nada.
+test('una troncal ofrece alaw y ulaw, para no morir con un 488', () => {
+  const conf = renderPjsip([tcp]);
+  assert.ok(conf.includes('allow=alaw'), 'falta alaw');
+  assert.ok(conf.includes('allow=ulaw'), 'falta ulaw');
+});
+
+// El orden es la preferencia. alaw delante porque los audios subidos se guardan
+// en alaw: reproducirlos por una troncal alaw no transcodifica, y transcodificar
+// es lo que desploma la concurrencia.
+test('alaw va antes que ulaw: es el códec de los audios subidos', () => {
+  const conf = renderPjsip([tcp]);
+  assert.ok(conf.indexOf('allow=alaw') < conf.indexOf('allow=ulaw'));
+});
+
+test('los códecs se declaran después de disallow=all, o no valdrían', () => {
+  const conf = renderPjsip([tcp]);
+  assert.ok(conf.indexOf('disallow=all') < conf.indexOf('allow=alaw'));
+});
+
+test('todas las troncales los llevan, sea cual sea su modo', () => {
+  const conf = renderPjsip([
+    tcp,
+    { name: 'twilio', host: 'x.pstn.twilio.com', mode: 'identify', transport: 'udp', matchIp: '54.172.60.0/30,54.244.51.0/30' },
+  ]);
+  assert.equal(conf.match(/allow=ulaw/g)?.length, 2);
+});

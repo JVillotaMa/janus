@@ -40,9 +40,18 @@ const transportLine = (trunk: Trunk): string[] =>
 /**
  * Traduce las troncales a secciones de PJSIP.
  *
- * ponytail: `alaw` fijo, que es lo que usan las troncales españolas.
- * Transcodificar es lo que desploma la concurrencia, así que si algún proveedor
- * pide otro códec, el arreglo es un campo `codec` por troncal.
+ * `alaw` primero y `ulaw` después. No es lo mismo que dejar elegir: los dos van
+ * a 64 kbit/s y ninguno transcodifica contra el otro extremo, así que ofrecer
+ * ambos cubre a un proveedor europeo y a uno americano sin coste. Ofrecer solo
+ * uno es lo que hace que la llamada muera con `488 Not Acceptable Here` cuando
+ * el otro lado no lo tiene — Twilio ofrece ulaw por defecto.
+ *
+ * El orden es la preferencia, y `alaw` va delante a propósito: los audios subidos
+ * se guardan en alaw, así que reproducirlos por una troncal alaw no transcodifica.
+ * Transcodificar es lo que desploma la concurrencia.
+ *
+ * ponytail: dos códecs fijos. El día que un proveedor pida uno que no sea
+ * ninguno de estos —opus, g722—, el arreglo es un campo `codec` por troncal.
  *
  * @param trunks Las troncales guardadas, con su contraseña.
  * @returns El contenido completo de `pjsip_janus.conf`.
@@ -62,6 +71,7 @@ function section(trunk: Trunk): string {
     ...transportLine(trunk),
     'disallow=all',
     'allow=alaw',
+    'allow=ulaw',
     `aors=${name}`,
     ...(trunk.mode === 'register'
       ? [`outbound_auth=${name}`, ...(trunk.username ? [`from_user=${trunk.username}`] : [])]

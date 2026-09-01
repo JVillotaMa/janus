@@ -155,7 +155,7 @@ src/
   calls.ts       script: imprime las ultimas llamadas
   main.ts        entrypoint: conecta ARI y ata las piezas
 flow.json        SOLO la semilla de una base vacia. El grafo vive en la BBDD
-tests/           244 tests, deterministas, sin Asterisk   -> pnpm test
+tests/           248 tests, deterministas, sin Asterisk   -> pnpm test
   fake-channel.ts    dobles de canal, bridge y cliente ARI
   interpreter.test.ts  bucle, aristas, horario, cancelacion, nodo entry
   nodes.test.ts        say / gather / hangup, con timers simulados
@@ -362,6 +362,12 @@ Reglas que no conviene romper:
   de NAT o de credenciales. Si pasa eso, prueba TCP antes de sospechar de nada mas.
   Una troncal sin transporte declarado genera el mismo texto que antes de que se
   pudiera elegir, asi que las de antes no cambian de comportamiento.
+- **Una troncal ofrece alaw Y ulaw, con alaw delante.** Ofrecer uno solo es lo
+  que hace que un proveedor que no lo tiene —Twilio ofrece ulaw por defecto—
+  conteste `488 Not Acceptable Here` y la llamada no llegue ni al flujo. Los dos
+  van a 64 kbit/s, asi que ofrecer ambos no cuesta nada. El orden es preferencia
+  y alaw va primero porque los audios subidos se guardan en alaw: reproducirlos
+  por una troncal alaw no transcodifica.
 - **En un fichero de Asterisk el `;` abre un comentario.** Un parametro de URI va
   escapado (`contact=sip:host\;transport=tcp`); sin la barra, Asterisk lee
   `contact=sip:host` y tira el resto EN SILENCIO: la config carga sin quejarse y
