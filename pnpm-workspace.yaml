@@ -1,2 +1,19 @@
-allowBuilds:
-  better-sqlite3: true
+# better-sqlite3 NO se compila, y no es preferencia: el paquete trae el binario ya
+# hecho para cada plataforma en `prebuilds/` —`linux-x64.node` incluido—, así que
+# compilarlo solo consigue exigir make, gcc y python en la maquina de destino para
+# acabar con el mismo `.node` que ya venia.
+#
+# Hay que decirlo explicitamente porque el paquete tiene un `binding.gyp` en la
+# raiz y NINGUN script `install`: npm y pnpm sintetizan `install: node-gyp rebuild`
+# al ver ese fichero.
+#
+# `strictDepBuilds: false` es lo que hace que saltarselo no sea ademas un error:
+# sin el, pnpm instala bien pero sale con codigo 1, y eso aborta cualquier
+# despliegue con `set -e`.
+#
+# Esto vive AQUI y solo aqui. Estuvo tambien en el campo `pnpm` de package.json
+# diciendo lo contrario, y el resultado fue que cada version de pnpm hacia una
+# cosa: el portatil no compilaba y el droplet si, hasta morir con `not found: make`.
+ignoredBuiltDependencies:
+  - better-sqlite3
+strictDepBuilds: false

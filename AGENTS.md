@@ -327,11 +327,27 @@ grep 3000`). SQLite mantiene abierto el inode aunque borres el fichero, asi que
 el motor sigue escribiendo en algo que ya no existe y se pierden llamadas reales
 sin ningun error. Son datos del dueno del repo, no material de pruebas.
 
-`better-sqlite3` trae binarios precompilados, asi que no hace falta compilador.
-pnpm bloquea su script de instalacion; ya esta resuelto con
-`pnpm approve-builds better-sqlite3`, que deja `ignoredBuiltDependencies` en
-package.json. Si vuelve a saltar, ese es el comando (el nombre va como argumento,
-si no es interactivo).
+**`better-sqlite3` NUNCA se compila, y eso vive en `pnpm-workspace.yaml`.** El
+paquete trae el binario ya hecho para cada plataforma en `prebuilds/`, asi que
+compilarlo solo consigue exigir make, gcc y python en la maquina de destino para
+acabar con el mismo `.node` que ya venia. Hay que decirlo explicitamente porque
+tiene un `binding.gyp` en la raiz y ningun script `install`: npm y pnpm sintetizan
+`install: node-gyp rebuild` al ver ese fichero.
+
+```yaml
+ignoredBuiltDependencies:
+  - better-sqlite3
+strictDepBuilds: false
+```
+
+`strictDepBuilds: false` no es opcional: sin el, pnpm instala bien pero **sale con
+codigo 1**, y eso aborta cualquier despliegue con `set -e`.
+
+**Esto vive ahi y solo ahi.** Estuvo tambien en el campo `pnpm` de `package.json`
+diciendo lo contrario (`allowBuilds: true` en uno, `ignoredBuiltDependencies` en
+otro), y el resultado fue que cada version de pnpm elegia una: el portatil no
+compilaba —con toolchain instalado, asi que nadie lo noto— y una maquina limpia si,
+hasta morir con `not found: make`. Comprobado reproduciendo las dos maquinas.
 
 Se descarto `node:sqlite`: hace lo mismo sin dependencias, pero es experimental.
 
