@@ -123,6 +123,13 @@ cd ui && npm install && cd ..
 Sí, dos gestores distintos: pnpm en la raíz y npm en `ui/`. No es descuido —
 pnpm bloquea el script de build de esbuild y Vite no arranca.
 
+Hace falta **ffmpeg** en la máquina, pero solo para subir audios desde el editor:
+sin él el motor arranca y atiende llamadas igual, y la subida falla diciéndolo.
+
+```bash
+sudo apt install ffmpeg     # o lo que use tu distro
+```
+
 La configuración de Asterisk viene en el repo, en `asterisk-config/etc/`. Lo
 único que hay que bajar son los audios, que pesan y se regeneran:
 
@@ -165,7 +172,7 @@ Y marcas `100` desde un softphone registrado como `jaime`.
 | Comando | Qué hace |
 |---|---|
 | `pnpm start` | El motor: conecta con ARI, configura las troncales y sirve la API en :3000 |
-| `pnpm test` | Los 137 tests. No necesitan Asterisk ni red |
+| `pnpm test` | Los 304 tests: 244 puros con `node --test` y 60 de la UI con jsdom. No necesitan Asterisk ni red |
 | `pnpm typecheck` | `tsc --noEmit`. No compila, solo comprueba |
 | `pnpm calls` | Las últimas llamadas con su traza. `pnpm calls 50` para más |
 | `cd ui && npm run dev` | El editor de flujos en :5173 |
@@ -198,6 +205,9 @@ curl http://localhost:3000/api/flow                            # el flujo actual
 curl http://localhost:3000/api/flows                           # las versiones publicadas
 curl 'http://localhost:3000/api/flows?version=2'               # el grafo de la v2
 curl http://localhost:3000/api/trunks                          # las troncales y su estado
+curl http://localhost:3000/api/sounds                          # los audios subidos
+curl -X PUT --data-binary @saludo.mp3 \
+     http://localhost:3000/api/sounds/saludo.mp3               # subir uno
 ```
 
 ### Dónde está cada cosa
@@ -206,8 +216,8 @@ curl http://localhost:3000/api/trunks                          # las troncales y
 src/            el motor (TypeScript, sin build)
 flow.json       la semilla de una base vacía. El grafo vive en la BBDD
 janus.db        flujos, troncales y trazas (SQLite). Fuera del repo
-tests/          137 tests deterministas
-ui/             el editor (React Flow + Vite)
+tests/          244 tests deterministas del motor
+ui/             el editor (React Flow + Vite), con 49 tests puros y 60 con jsdom
 asterisk-config/etc     config de Asterisk, montada en el contenedor. En el repo
 asterisk-config/sounds  los audios. Fuera del repo: pesan y se regeneran
 ```
@@ -224,7 +234,12 @@ calls(id, tenant_id, flow_id, flow_version, channel_id, started_at, ended_at, ou
 call_steps(call_id, seq, node_id, entered_at, vars jsonb)   -- el trace
 ```
 
-`graph` = `{nodes: [{id, type, config}], edges: [{from, to, when}]}`
+`graph` = `{nodes: [{id, name, type, config}], edges: [{from, to, when}]}`
+
+El `id` lo genera el editor y es opaco: lo referencian las aristas y `call_steps`, así que no se
+puede cambiar. El `name` es el rótulo, se cambia cuando quieras, y el motor lo ignora. La traza se
+lee resolviendo cada id contra el grafo de la versión que recorrió esa llamada, así que renombrar
+un nodo no reescribe el pasado.
 
 **Versionado inmutable.** Publicar crea versión nueva, y cada llamada se ancla a
 la versión con la que entró — capturada al entrar, no al colgar. Despliegues
@@ -235,9 +250,19 @@ Volver a una versión anterior es cargarla en el editor y publicarla otra vez:
 sale una versión nueva y las viejas siguen intactas. El invariante no hay que
 defenderlo, se cumple solo.
 
-**Condiciones:** nada de DSL propio. `{var, op, value}` con AND/OR, o
-directamente [jsonlogic](https://jsonlogic.com) — ya existe, ya tiene evaluador
-en JS y en el back, y se serializa solo.
+**Condiciones:** nada de DSL propio. [jsonlogic](https://jsonlogic.com) — ya existe, ya tiene
+evaluador en JS y en el back, y se serializa solo. En el editor se construyen como un árbol de
+grupos: cada grupo con su unión —Y u O— y su casilla de negado, y dentro comparaciones y otros
+grupos. Mezclar Y con O es anidar, que además quita la ambigüedad de precedencia.
+
+Lo que no cabe en el constructor —un operador que no ofrece— se enseña tal cual, en solo lectura.
+Reabrir una condición como algo parecido pero distinto cambiaría por dónde va una llamada real sin
+que nadie lo avise.
+
+**El vocabulario está declarado**, no repartido: `src/schema.ts` dice qué campos tiene cada tipo de
+nodo, en qué unidad, con qué valor por defecto y qué variables deja disponibles al salir. Lo leen
+el motor para validar y para ejecutar, y el editor para pintar los formularios y saber qué ofrecer
+en cada arista.
 
 ---
 

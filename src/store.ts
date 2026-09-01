@@ -96,12 +96,13 @@ const SCHEMA = `
     published_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS trunks (
-    name     TEXT PRIMARY KEY,
-    host     TEXT NOT NULL,
-    mode     TEXT NOT NULL,
-    username TEXT,
-    password TEXT,
-    match_ip TEXT
+    name      TEXT PRIMARY KEY,
+    host      TEXT NOT NULL,
+    mode      TEXT NOT NULL,
+    transport TEXT,
+    username  TEXT,
+    password  TEXT,
+    match_ip  TEXT
   );
   CREATE TABLE IF NOT EXISTS calls (
     id           TEXT PRIMARY KEY,
@@ -133,6 +134,7 @@ interface TrunkRow {
   name: string;
   host: string;
   mode: string;
+  transport: string | null;
   username: string | null;
   password: string | null;
   match_ip: string | null;
@@ -155,15 +157,24 @@ export function openStore(file: string): Store {
   db.pragma('journal_mode = WAL');
   db.exec(SCHEMA);
 
-  // Las bases creadas antes de que la llamada guardase su versión no tienen la
-  // columna, y `CREATE TABLE IF NOT EXISTS` no la añade. Se pregunta antes en
-  // vez de envolver el ALTER en un try/catch: ese catch se tragaría también una
-  // base corrupta o sin permisos y dejaría el motor escribiendo contra una
-  // tabla que no es la que cree.
-  const columns = (db.prepare('PRAGMA table_info(calls)').all() as { name: string }[]);
-  if (!columns.some((column) => column.name === 'flow_version')) {
-    db.exec('ALTER TABLE calls ADD COLUMN flow_version INTEGER');
-  }
+  /**
+   * Añade una columna a una tabla que ya existía, si le falta.
+   *
+   * `CREATE TABLE IF NOT EXISTS` no toca una tabla que ya está, así que las
+   * bases anteriores a cada columna nueva se quedarían sin ella. Se pregunta
+   * antes con `PRAGMA` en vez de envolver el ALTER en un try/catch: ese catch se
+   * tragaría también una base corrupta o sin permisos, y dejaría el motor
+   * escribiendo contra una tabla que no es la que cree.
+   */
+  const addColumn = (table: string, name: string, type: string) => {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!columns.some((column) => column.name === name)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+    }
+  };
+
+  addColumn('calls', 'flow_version', 'INTEGER');
+  addColumn('trunks', 'transport', 'TEXT');
 
   const insertCall = db.prepare(
     `INSERT OR REPLACE INTO calls
@@ -181,8 +192,8 @@ export function openStore(file: string): Store {
   const selectTrunks = db.prepare('SELECT * FROM trunks ORDER BY name');
   const clearTrunks = db.prepare('DELETE FROM trunks');
   const insertTrunk = db.prepare(
-    `INSERT INTO trunks (name, host, mode, username, password, match_ip)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO trunks (name, host, mode, transport, username, password, match_ip)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
   const selectCalls = db.prepare('SELECT * FROM calls ORDER BY started_at DESC, rowid DESC LIMIT ?');
   const selectSteps = db.prepare('SELECT node, at FROM call_steps WHERE call_id = ? ORDER BY seq');
@@ -201,6 +212,7 @@ export function openStore(file: string): Store {
       name: row.name,
       host: row.host,
       mode: row.mode as Trunk['mode'],
+      transport: row.transport as Trunk['transport'],
       username: row.username,
       password: row.password,
       matchIp: row.match_ip,
@@ -214,6 +226,7 @@ export function openStore(file: string): Store {
         trunk.name,
         trunk.host,
         trunk.mode,
+        trunk.transport ?? null,
         trunk.username ?? null,
         trunk.password ?? null,
         trunk.matchIp ?? null,

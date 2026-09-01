@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node src/main.ts",
-    "test": "node --test",
+    "test": "node --test && npm --prefix ui test",
     "typecheck": "tsc --noEmit",
     "calls": "node src/calls.ts"
   },

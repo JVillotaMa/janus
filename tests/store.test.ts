@@ -330,3 +330,62 @@ test('el modo identify no guarda credenciales', () => {
   assert.equal(guardada!.matchIp, '212.0.0.5');
   store.close();
 });
+
+// ─── La migración de las troncales ───────────────────────────────────────────
+
+/** Una base con la tabla de troncales de antes de que el transporte se eligiera. */
+const conTroncalesViejas = (): string => {
+  const file = join(mkdtempSync(join(tmpdir(), 'janus-')), 'troncales.db');
+  const db = new Database(file);
+  db.exec(`
+    CREATE TABLE trunks (
+      name TEXT PRIMARY KEY, host TEXT NOT NULL, mode TEXT NOT NULL,
+      username TEXT, password TEXT, match_ip TEXT
+    );
+    INSERT INTO trunks VALUES ('masmovil', 'sip.masmovil.es', 'register', 'u', 'p', NULL);
+  `);
+  db.close();
+  return file;
+};
+
+test('una base con troncales de antes se migra sin perder ninguna', () => {
+  const store = openStore(conTroncalesViejas());
+
+  const [trunk] = store.trunks();
+  assert.equal(trunk!.name, 'masmovil');
+  assert.equal(trunk!.host, 'sip.masmovil.es');
+  assert.equal(trunk!.password, 'p', 'la contraseña sigue ahí');
+  store.close();
+});
+
+// No se les inventa uno: se dieron de alta cuando solo había UDP, y esa es la
+// verdad. Igual que a las llamadas anteriores no se les inventó una versión.
+test('una troncal anterior al cambio se queda sin transporte, no con uno inventado', () => {
+  const store = openStore(conTroncalesViejas());
+  assert.equal(store.trunks()[0]!.transport, null);
+  store.close();
+});
+
+test('abrir dos veces una base de troncales ya migrada no falla', () => {
+  const file = conTroncalesViejas();
+  openStore(file).close();
+
+  const store = openStore(file);
+  store.saveTrunks([{ name: 'eleven', host: 'sip.rtc.elevenlabs.io:5060', mode: 'identify', transport: 'tcp', matchIp: '1.2.3.4' }]);
+  assert.equal(store.trunks()[0]!.transport, 'tcp');
+  store.close();
+});
+
+test('el transporte se guarda y se relee', () => {
+  const store = openStore(':memory:');
+  store.saveTrunks([
+    { name: 'porTcp', host: 'a', mode: 'identify', transport: 'tcp', matchIp: '1.1.1.1' },
+    { name: 'sinDeclarar', host: 'b', mode: 'identify', matchIp: '2.2.2.2' },
+  ]);
+
+  assert.deepEqual(
+    store.trunks().map((t) => [t.name, t.transport]),
+    [['porTcp', 'tcp'], ['sinDeclarar', null]],
+  );
+  store.close();
+});

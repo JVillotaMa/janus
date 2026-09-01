@@ -7,6 +7,7 @@
  */
 
 import { cancelable } from './cancel.ts';
+import { defaults } from './schema.ts';
 import type { Unsubscribe } from './cancel.ts';
 import type { AriClient, Channel, Ctx, Nodes } from './types.ts';
 
@@ -106,8 +107,9 @@ export const NODES: Nodes = {
   // ponytail: sin barge-in. Para permitirlo, correr playToEnd y readDigit en
   // Promise.race y parar el playback al primer dígito.
   async gather(channel, config, ctx: Ctx) {
-    if (config.media) await playToEnd(channel, config.media, ctx.signal);
-    return { digit: await readDigit(channel, config.timeout ?? 5000, ctx.signal) };
+    const { media, timeout } = { ...defaults('gather'), ...config };
+    if (media) await playToEnd(channel, media, ctx.signal);
+    return { digit: await readDigit(channel, timeout, ctx.signal) };
   },
 
   /**
@@ -121,11 +123,12 @@ export const NODES: Nodes = {
    * y quedarse con la primera que conteste.
    */
   async dial(channel, config, ctx: Ctx) {
+    const { endpoint, timeout } = { ...defaults('dial'), ...config };
     const outbound = await ctx.client.channels.originate({
-      endpoint: config.endpoint,
+      endpoint,
       app: APP,
       appArgs: DIALED,
-      timeout: config.timeout ?? 30,
+      timeout,
     });
 
     let bridge = null;

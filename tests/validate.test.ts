@@ -184,3 +184,143 @@ test('el flujo real del repo está sano', async () => {
   ) as Flow;
   assert.deepEqual(check(flow), []);
 });
+
+// ─── El config contra el esquema del tipo ────────────────────────────────────
+
+test('falta un campo obligatorio: es error y dice cuál', () => {
+  const flow = conEntrada('saluda', [{ id: 'saluda', type: 'say' }], []);
+  const [issue] = errors(flow);
+  assert.equal(issue!.where, 'saluda');
+  assert.match(issue!.message, /media.*obligatorio/);
+});
+
+test('un campo vacío cuenta como ausente', () => {
+  const flow = conEntrada('saluda', [{ id: 'saluda', type: 'say', config: { media: '' } }], []);
+  assert.match(errors(flow)[0]!.message, /obligatorio/);
+});
+
+test('un campo con el tipo equivocado es error', () => {
+  const flow = conEntrada(
+    'llama',
+    [{ id: 'llama', type: 'dial', config: { endpoint: 'PJSIP/ana', timeout: '20' } }],
+    [],
+  );
+  assert.match(errors(flow)[0]!.message, /"timeout" tiene que ser un número/);
+});
+
+test('un campo opcional ausente no molesta: gather puede no llevar audio', () => {
+  const flow = conEntrada('menu', [{ id: 'menu', type: 'gather' }], []);
+  assert.deepEqual(errors(flow), []);
+});
+
+test('un campo que el tipo no declara es aviso, no error', () => {
+  const flow = conEntrada(
+    'saluda',
+    [{ id: 'saluda', type: 'say', config: { media: 'sound:hola', endpoint: 'PJSIP/ana' } }],
+    [],
+  );
+  assert.deepEqual(errors(flow), []);
+  assert.ok(warnings(flow).some((i) => /no usa el campo "endpoint"/.test(i.message)));
+});
+
+test('un tipo que el esquema no declara no produce quejas de config', () => {
+  const flow = conEntrada('raro', [{ id: 'raro', type: 'inventado', config: { lo: 'que sea' } }], []);
+  assert.equal(errors(flow).filter((i) => /campo/.test(i.message)).length, 0);
+});
+
+// ─── El nombre es un rótulo, no una clave ────────────────────────────────────
+
+test('dos nodos con el mismo nombre son aviso, no error', () => {
+  const flow: Flow = {
+    ...sano,
+    nodes: [
+      { ...entrada, name: 'Recepción' },
+      { id: 'saluda', type: 'say', name: 'Recepción', config: { media: 'sound:hola' } },
+      { id: 'fin', type: 'hangup' },
+    ],
+  };
+  assert.deepEqual(errors(flow), []);
+  assert.equal(warnings(flow).filter((i) => /llamados "Recepción"/.test(i.message)).length, 2);
+});
+
+test('nombres distintos no dicen nada', () => {
+  const flow: Flow = {
+    ...sano,
+    nodes: [
+      { ...entrada, name: 'Recepción' },
+      { id: 'saluda', type: 'say', name: 'Saludo', config: { media: 'sound:hola' } },
+      { id: 'fin', type: 'hangup' },
+    ],
+  };
+  assert.deepEqual(check(flow), []);
+});
+
+// ─── El esquema y el motor hablan del mismo vocabulario ──────────────────────
+
+test('todo tipo que el motor ejecuta está declarado en el esquema, y al revés', async () => {
+  const { NODES } = await import('../src/nodes.ts');
+  const { NODE_TYPES } = await import('../src/schema.ts');
+  assert.deepEqual(Object.keys(NODE_TYPES).sort(), Object.keys(NODES).sort());
+});
+
+test('las variables que dice producir cada tipo existen en el esquema', async () => {
+  const { NODE_TYPES, VARIABLES, ALWAYS } = await import('../src/schema.ts');
+  for (const [type, spec] of Object.entries(NODE_TYPES)) {
+    for (const name of spec.produces) {
+      assert.ok(VARIABLES[name], `${type} dice producir "${name}", que no está declarada`);
+    }
+  }
+  for (const name of ALWAYS) assert.ok(VARIABLES[name], `"${name}" no está declarada`);
+});
+
+test('un campo con valor por defecto nunca es obligatorio', async () => {
+  const { NODE_TYPES } = await import('../src/schema.ts');
+  for (const [type, spec] of Object.entries(NODE_TYPES)) {
+    for (const field of spec.fields) {
+      assert.ok(
+        !(field.required && field.default !== undefined),
+        `${type}.${field.name} es obligatorio y tiene defecto a la vez`,
+      );
+    }
+  }
+});
+
+// ─── El destino de un dial ───────────────────────────────────────────────────
+
+/** Un flujo con un solo nodo que llama. */
+const llamando = (endpoint: string): Flow =>
+  conEntrada('llama', [{ id: 'llama', type: 'dial', config: { endpoint } }], []);
+
+const sobreTroncal = (flow: Flow, trunks: string[]) =>
+  validate(flow, trunks, TYPES).filter((i) => /troncal/.test(i.message));
+
+test('llamar por una troncal que no existe es aviso, no error', () => {
+  const issues = sobreTroncal(llamando('PJSIP/+1000000000@eleven'), []);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0]!.level, 'warning');
+  assert.equal(issues[0]!.where, 'llama');
+  assert.match(issues[0]!.message, /"eleven".*no está dada de alta/);
+});
+
+test('llamar por una troncal dada de alta no dice nada', () => {
+  assert.deepEqual(sobreTroncal(llamando('PJSIP/+1000000000@eleven'), ['eleven']), []);
+});
+
+test('llamar a una extensión interna no necesita troncal', () => {
+  assert.deepEqual(sobreTroncal(llamando('PJSIP/ana'), []), []);
+});
+
+test('un destino que no se sabe leer no inventa un aviso de troncal', () => {
+  assert.deepEqual(sobreTroncal(llamando('PJSIP/eleven/sip:x@host'), []), []);
+});
+
+// Montar el flujo y dar de alta la troncal después es un orden de trabajo
+// válido, así que el aviso no puede bloquear la publicación.
+test('el aviso de troncal no impide publicar', () => {
+  assert.deepEqual(errors(llamando('PJSIP/+1000000000@eleven')), []);
+});
+
+test('el dominio puesto donde va la troncal salta como troncal inexistente', () => {
+  const issues = sobreTroncal(llamando('PJSIP/+1000000000@sip.rtc.elevenlabs.io:5060'), ['eleven']);
+  assert.match(issues[0]!.message, /sip\.rtc\.elevenlabs\.io:5060/);
+});

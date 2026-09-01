@@ -1,8 +1,11 @@
 /**
  * @fileoverview API HTTP: el flujo que edita el editor y las llamadas ya hechas.
  *
- * ponytail: cinco rutas con node:http. Cuando haya que servir la UI compilada
- * o pasen de media docena, migrar a Express o Hono son diez líneas.
+ * ponytail: SIETE rutas con node:http, y el techo anterior decía seis. Se pasó a
+ * propósito con `/api/sounds`, que es un bloque calcado al de `/api/trunks` y no
+ * usa nada de lo que un framework aporta: ni parámetros de ruta, ni middleware,
+ * ni negociación de contenido. La octava sí obliga a migrar a Hono — o a admitir
+ * que este comentario no es un techo y quitarlo.
  */
 
 import { createServer } from 'node:http';
@@ -10,6 +13,8 @@ import type { IncomingMessage } from 'node:http';
 import type { FlowVersion, Store } from './store.ts';
 import type { Trunk,Flow } from './types.ts';
 import { renderPjsip } from './pjsip.ts';
+import { MAX_BYTES, soundName } from './sounds.ts';
+import type { Sound } from './sounds.ts';
 import { validate } from './validate.ts';
 import type { Issue } from './validate.ts';
 
@@ -38,6 +43,18 @@ export interface FlowStore {
   set(flow: FlowVersion): void;
 }
 
+/**
+ * Lo que la API necesita de la biblioteca de audios. Lo ata `main.ts`.
+ *
+ * Va como puerto y no como llamada directa a `sounds.ts` por lo mismo que
+ * `Provisioner`: así los tests de la API corren sin ffmpeg y sin escribir en el
+ * árbol de sonidos de verdad.
+ */
+export interface Sounds {
+  list(): Sound[];
+  save(name: string, bytes: Buffer): Promise<Sound>;
+}
+
 /** Lo que la API necesita de Asterisk. Lo ata `main.ts`. */
 export interface Provisioner {
   /** Vuelca las troncales a la configuración de Asterisk y recarga. */
@@ -52,7 +69,13 @@ export interface Provisioner {
  * Un PUT publica una versión nueva en la base y la pone en caliente: las
  * llamadas en curso conservan la que tenían al entrar.
  */
-export function serveApi(flow: FlowStore, store: Store, asterisk: Provisioner, port = 3000) {
+export function serveApi(
+  flow: FlowStore,
+  store: Store,
+  asterisk: Provisioner,
+  sounds: Sounds,
+  port = 3000,
+) {
   return createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const json = (code: number, body: unknown) => {
@@ -82,6 +105,45 @@ export function serveApi(flow: FlowStore, store: Store, asterisk: Provisioner, p
       return void json(200, version.graph);
     }
 
+    // Los audios que reproduce el flujo. El fichero viaja en el cuerpo crudo del
+    // PUT: no hay más campos que mandar, así que un multipart solo añadiría un
+    // parser de límites para transportar exactamente lo mismo.
+    if (url.pathname === '/api/sounds' && req.method === 'GET') {
+      return void json(200, sounds.list());
+    }
+
+    if (url.pathname.startsWith('/api/sounds/') && req.method === 'PUT') {
+      const name = soundName(url.pathname.slice('/api/sounds/'.length));
+      if (!name) {
+        return void json(400, { ok: false, issues: [
+          { level: 'error', where: 'nombre', message: 'ese nombre no deja ningún carácter utilizable' },
+        ] });
+      }
+
+      let bytes: Buffer;
+      try {
+        bytes = await body(req, MAX_BYTES);
+      } catch (err) {
+        // `connection: close` corta la subida que sigue llegando, pero después
+        // de haber mandado la respuesta, para que el cliente sepa por qué.
+        res.writeHead(413, { 'content-type': 'application/json', connection: 'close' });
+        return void res.end(JSON.stringify({ ok: false, issues: [
+          { level: 'error', where: 'audio', message: (err as Error).message },
+        ] }));
+      }
+
+      try {
+        const sound = await sounds.save(name, bytes);
+        console.log(`♪ audio ${sound.name}: ${sound.seconds}s`);
+        return void json(200, { ok: true, ...sound });
+      } catch (err) {
+        console.error('✗ audio rechazado:', (err as Error).message);
+        return void json(400, { ok: false, issues: [
+          { level: 'error', where: 'audio', message: (err as Error).message },
+        ] });
+      }
+    }
+
     // La config generada, para poder verla desde la UI sin entrar por SSH. Las
     // contraseñas se tapan: el fichero de verdad las lleva en claro porque
     // Asterisk las necesita, pero por la API no salen nunca.
@@ -104,7 +166,7 @@ export function serveApi(flow: FlowStore, store: Store, asterisk: Provisioner, p
       if (req.method === 'PUT') {
         let list: Trunk[];
         try {
-          list = JSON.parse(await body(req)) as Trunk[];
+          list = JSON.parse((await body(req)).toString()) as Trunk[];
         } catch (err) {
           return void json(400, { ok: false, issues: [jsonRoto(err as Error)] });
         }
@@ -138,6 +200,9 @@ export function serveApi(flow: FlowStore, store: Store, asterisk: Provisioner, p
       return void res.writeHead(405).end();
     }
 
+    // Responder sin haber leído el cuerpo no corta la subida: `node:http` vacía
+    // solo lo que quede por llegar cuando la respuesta termina. Comprobado con
+    // un cuerpo de un mega. No hace falta drenarlo a mano.
     if (url.pathname !== '/api/flow') return void res.writeHead(404).end();
 
     // El grafo pelado, como siempre: quién es la versión viva se sabe por
@@ -146,7 +211,7 @@ export function serveApi(flow: FlowStore, store: Store, asterisk: Provisioner, p
 
     if (req.method === 'PUT') {
       try {
-        const nuevo = JSON.parse(await body(req)) as Flow;
+        const nuevo = JSON.parse((await body(req)).toString()) as Flow;
 
         // Los errores no se guardan: un tipo de nodo desconocido reventaría en
         // una llamada real. Los avisos sí, y viajan de vuelta para que se vean.
@@ -173,11 +238,31 @@ export function serveApi(flow: FlowStore, store: Store, asterisk: Provisioner, p
   );
 }
 
-/** El cuerpo de la petición, como texto. */
-async function body(req: IncomingMessage): Promise<string> {
+/**
+ * El cuerpo de la petición.
+ *
+ * El límite se comprueba **mientras se lee**, no después: `content-length` lo
+ * manda el cliente y no es de fiar, y leer entero para mirar el tamaño luego
+ * significa que el gigabyte ya está en memoria cuando te enteras.
+ *
+ * @param max Bytes máximos. Sin él no hay límite, que es lo que necesitan las
+ *     rutas cuyo cuerpo es un JSON que escribe el propio editor.
+ * @throws {Error} Si se pasa de `max`.
+ */
+async function body(req: IncomingMessage, max?: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks).toString();
+  let total = 0;
+  for await (const chunk of req) {
+    total += (chunk as Buffer).length;
+    if (max !== undefined && total > max) {
+      // Ojo: NO se destruye aquí. Cerrar el socket antes de escribir la
+      // respuesta deja al cliente esperando una respuesta que ya no puede
+      // llegar. Se corta con `connection: close` DESPUÉS de responder.
+      throw new Error(`el audio pasa del máximo de ${Math.round(max / 1024 / 1024)} MB`);
+    }
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks);
 }
 
 const jsonRoto = (err: Error): Issue => ({ level: 'error', where: 'json', message: err.message });
@@ -208,7 +293,23 @@ function validateTrunks(list: Trunk[]): Issue[] {
     else if (vistos.has(trunk.name)) error('hay dos troncales con este nombre');
     vistos.add(trunk?.name);
 
+    // Un host acaba dentro de una URI en un fichero de Asterisk, donde el `;`
+    // abre un comentario. Lista de permitidos y no de prohibidos: lo que no sea
+    // un nombre o una IP con puerto opcional se rechaza aquí, porque colarlo
+    // genera una línea que Asterisk carga a medias y en silencio.
+    //
+    // ponytail: sin IPv6, que necesitaría corchetes. Cuando haga falta, aquí.
     if (!trunk?.host?.trim()) error('falta el host del proveedor');
+    else if (!/^[A-Za-z0-9._-]+(:[0-9]{1,5})?$/.test(trunk.host.trim())) {
+      error(
+        `el host "${trunk.host}" no vale: solo el nombre o la IP, con puerto opcional. ` +
+          'El transporte se elige en su propio campo',
+      );
+    }
+
+    if (trunk?.transport && !['udp', 'tcp'].includes(trunk.transport)) {
+      error(`transporte desconocido "${trunk.transport}": es udp o tcp`);
+    }
 
     if (trunk?.mode === 'register') {
       if (!trunk.username?.trim()) error('el modo register necesita usuario');

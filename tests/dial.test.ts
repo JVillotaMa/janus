@@ -6,6 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NODES, DIALED } from '../src/nodes.ts';
+import { defaults } from '../src/schema.ts';
 import { Hungup } from '../src/cancel.ts';
 import { run } from '../src/interpreter.ts';
 import { FakeChannel, FakeClient, tick } from './fake-channel.ts';
@@ -33,12 +34,14 @@ test('origina hacia el endpoint configurado y marca la pata saliente', async () 
   await running;
 });
 
-test('usa 30 segundos de timeout por defecto', async () => {
+// Contra el esquema y no contra un 30 escrito aquí: el defecto que aplica el
+// motor y el que enseña el formulario tienen que ser el mismo dato.
+test('usa el timeout que declara el esquema por defecto', async () => {
   const client = new FakeClient();
   const running = NODES.dial!(new FakeChannel(), { endpoint: 'PJSIP/ana' }, newCtx(client));
   await tick();
 
-  assert.equal(client.originated[0]!.timeout, 30);
+  assert.equal(client.originated[0]!.timeout, defaults('dial').timeout);
 
   client.destroys(client.lastOutbound, 19);
   await running;

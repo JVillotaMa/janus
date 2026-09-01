@@ -10,7 +10,9 @@
  */
 
 import { NODES } from './nodes.ts';
-import type { Edge, Flow } from './types.ts';
+import { parseEndpoint } from './endpoint.ts';
+import { NODE_TYPES } from './schema.ts';
+import type { Edge, Flow, NodeSpec } from './types.ts';
 
 export interface Issue {
   level: 'error' | 'warning';
@@ -44,6 +46,19 @@ export function validate(
     if (!types.includes(node.type)) {
       error(node.id, `el motor no conoce el tipo "${node.type}"`);
     }
+    for (const issue of configIssues(node)) issues.push(issue);
+  }
+
+  // El nombre es un rótulo, no una clave: dos iguales confunden al leer la traza
+  // pero no rompen nada, así que avisan en vez de bloquear.
+  const byName = new Map<string, string[]>();
+  for (const node of flow.nodes) {
+    if (node.name) byName.set(node.name, [...(byName.get(node.name) ?? []), node.id]);
+  }
+  for (const [name, repes] of byName) {
+    if (repes.length > 1) {
+      for (const id of repes) warn(id, `hay ${repes.length} nodos llamados "${name}"`);
+    }
   }
 
   if (!ids.has(flow.start)) {
@@ -66,6 +81,19 @@ export function validate(
     const trunk = entry.config?.trunk;
     if (trunk && !trunks.includes(trunk)) {
       warn(entry.id, `la troncal "${trunk}" no está dada de alta`);
+    }
+  }
+
+  // Un `dial` que sale por una troncal que no existe falla mudo: el originate no
+  // encuentra el endpoint, el nodo devuelve `dial: "failed"` y la llamada sigue
+  // por la arista por defecto, así que en la traza se ve igual que si hubieran
+  // colgado. Aviso y no error, porque montar el flujo antes de dar de alta la
+  // troncal es un orden de trabajo válido.
+  for (const node of flow.nodes) {
+    if (node.type !== 'dial') continue;
+    const destino = parseEndpoint(node.config?.endpoint);
+    if (destino?.trunk && !trunks.includes(destino.trunk)) {
+      warn(node.id, `llama por la troncal "${destino.trunk}", que no está dada de alta`);
     }
   }
 
@@ -97,6 +125,57 @@ export function validate(
 
   for (const id of unreachable(flow, ids)) {
     warn(id, 'no se llega desde el nodo de arranque');
+  }
+
+  return issues;
+}
+
+/**
+ * Comprueba el config de un nodo contra los campos que declara su tipo.
+ *
+ * Falta un obligatorio o está con el tipo equivocado: error, porque revienta en
+ * una llamada real. Un campo de más: aviso, porque el motor lo ignora y puede
+ * ser el resto de un cambio de tipo.
+ *
+ * @param node El nodo a comprobar. Un tipo que el esquema no declara no produce
+ *     nada aquí: de ese ya se queja el bucle principal.
+ */
+function configIssues(node: NodeSpec): Issue[] {
+  const spec = NODE_TYPES[node.type];
+  if (!spec) return [];
+
+  const config = node.config ?? {};
+  const issues: Issue[] = [];
+
+  for (const field of spec.fields) {
+    const value = config[field.name];
+    if (value === undefined || value === null || value === '') {
+      if (field.required) {
+        issues.push({
+          level: 'error',
+          where: node.id,
+          message: `falta "${field.label}" (${field.name}), que es obligatorio`,
+        });
+      }
+      continue;
+    }
+    if (typeof value !== field.type) {
+      issues.push({
+        level: 'error',
+        where: node.id,
+        message: `"${field.name}" tiene que ser ${field.type === 'number' ? 'un número' : 'texto'}`,
+      });
+    }
+  }
+
+  for (const key of Object.keys(config)) {
+    if (!spec.fields.some((field) => field.name === key)) {
+      issues.push({
+        level: 'warning',
+        where: node.id,
+        message: `un nodo de tipo "${node.type}" no usa el campo "${key}"`,
+      });
+    }
   }
 
   return issues;

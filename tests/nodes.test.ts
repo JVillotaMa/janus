@@ -6,6 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NODES } from '../src/nodes.ts';
+import { defaults } from '../src/schema.ts';
 import { Hungup } from '../src/cancel.ts';
 import { FakeChannel, FakeClient, tick } from './fake-channel.ts';
 import type { Ctx } from '../src/types.ts';
@@ -145,13 +146,19 @@ test('gather devuelve null cuando vence el timeout', async (t) => {
   assert.deepEqual(await running, { digit: null });
 });
 
-test('gather usa 5000 ms de timeout por defecto', async (t) => {
+// El defecto se comprueba contra el esquema, no contra un número escrito aquí:
+// lo que importa es que el motor aplique exactamente lo que el formulario enseña.
+test('gather espera el timeout que declara el esquema', async (t) => {
+  const esperado = defaults('gather').timeout as number;
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const channel = new FakeChannel();
   const running = NODES.gather!(channel, {}, newCtx());
   await tick();
 
-  t.mock.timers.tick(5000);
+  t.mock.timers.tick(esperado - 1);
+  assert.equal(channel.dtmfListeners, 1, 'todavía escuchando justo antes del vencimiento');
+
+  t.mock.timers.tick(1);
   assert.deepEqual(await running, { digit: null });
 });
 

@@ -5,8 +5,9 @@
  * aprovisionamiento se prueba entero sin levantar el laboratorio, que es donde
  * un fallo se manifestaría como "la troncal no registra y no sé por qué".
  *
- * Es el único fichero que escribe el motor, y lo reescribe entero. Todo lo demás
- * de la config de Asterisk está versionado en `asterisk-config/etc/`.
+ * `pjsip_janus.conf` se reescribe entero en cada cambio. El resto de la config
+ * de Asterisk está versionada en `asterisk-config/etc/` y el motor no la toca;
+ * el otro sitio donde sí escribe es el directorio de audios subidos.
  */
 
 import type { Trunk } from './types.ts';
@@ -20,6 +21,21 @@ import type { Trunk } from './types.ts';
 export const CONTEXT = 'janus';
 
 const HEADER = '; generado por Janus — no editar a mano, se reescribe entero\n';
+
+/**
+ * El destino de una troncal, con su parámetro de transporte si lo tiene.
+ *
+ * **El `;` va escapado.** En un fichero de Asterisk abre un comentario, así que
+ * un `sip:host;transport=tcp` sin barra se lee como `sip:host` y el resto se tira
+ * en silencio: la configuración carga sin quejarse y usa otro transporte. Es el
+ * fallo que carga bien y hace otra cosa, así que lo cubre un test.
+ */
+const uri = (host: string, trunk: Trunk): string =>
+  trunk.transport ? `sip:${host}\\;transport=${trunk.transport}` : `sip:${host}`;
+
+/** La línea que elige el transporte local de salida. Sin declarar, no se emite. */
+const transportLine = (trunk: Trunk): string[] =>
+  trunk.transport ? [`transport=transport-${trunk.transport}`] : [];
 
 /**
  * Traduce las troncales a secciones de PJSIP.
@@ -43,6 +59,7 @@ function section(trunk: Trunk): string {
     `\n[${name}]`,
     'type=endpoint',
     `context=${CONTEXT}`,
+    ...transportLine(trunk),
     'disallow=all',
     'allow=alaw',
     `aors=${name}`,
@@ -52,7 +69,7 @@ function section(trunk: Trunk): string {
     '',
     `[${name}]`,
     'type=aor',
-    `contact=sip:${host}`,
+    `contact=${uri(host, trunk)}`,
     '',
   ];
 
@@ -67,9 +84,10 @@ function section(trunk: Trunk): string {
           '',
           `[${name}]`,
           'type=registration',
+          ...transportLine(trunk),
           `outbound_auth=${name}`,
-          `server_uri=sip:${host}`,
-          `client_uri=sip:${trunk.username ?? ''}@${host}`,
+          `server_uri=${uri(host, trunk)}`,
+          `client_uri=${uri(`${trunk.username ?? ''}@${host}`, trunk)}`,
           '',
         ]
       : [

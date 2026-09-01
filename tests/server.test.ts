@@ -12,6 +12,7 @@ import { serveApi } from '../src/server.ts';
 import type { FlowStore } from '../src/server.ts';
 import { openStore } from '../src/store.ts';
 import type { FlowVersion, Store } from '../src/store.ts';
+import type { Sound } from '../src/sounds.ts';
 import type { Flow } from '../src/types.ts';
 
 const flow = (start: string): Flow => ({
@@ -20,8 +21,49 @@ const flow = (start: string): Flow => ({
   edges: [{ from: start, to: 'fin' }],
 });
 
+/**
+ * El motor se calla durante estos tests.
+ *
+ * `node --test` usa la salida estándar del proceso hijo para su propio protocolo
+ * serializado. Lo que `server.ts` imprima —`⟳ flujo v2`, `♪ audio`, `⟳ troncales`—
+ * se intercala con esos bytes y los corrompe: el runner suelta
+ * `Unable to deserialize cloned data` y a veces da por fallado un fichero que
+ * pasó entero. Solo se ve al correr varios ficheros a la vez, así que parece un
+ * flake y no lo es.
+ *
+ * Esto no esconde nada: los fallos de test viajan por el protocolo, no por
+ * `console.log`.
+ */
+console.log = () => {};
+console.error = () => {};
+
 /** Asterisk no pinta nada en estos tests: ni se escribe fichero ni se recarga. */
 const asterisk = { apply: async () => {}, states: async () => ({}) };
+
+/**
+ * La biblioteca de audios, de mentira: guarda en memoria y no llama a ffmpeg.
+ *
+ * Por eso estos tests corren igual en una máquina sin ffmpeg y no escriben en el
+ * árbol de sonidos de nadie.
+ */
+function fakeSounds(fallo?: string) {
+  const guardados: Sound[] = [];
+  return {
+    guardados,
+    list: () => guardados,
+    save: async (name: string, bytes: Buffer): Promise<Sound> => {
+      if (fallo) throw new Error(fallo);
+      const sound = {
+        name,
+        media: `sound:janus/${name}`,
+        bytes: bytes.length,
+        seconds: Math.round((bytes.length / 8000) * 10) / 10,
+      };
+      guardados.push(sound);
+      return sound;
+    },
+  };
+}
 
 /**
  * El cuerpo de una respuesta. `any` a propósito y en un solo sitio: la forma la
@@ -35,19 +77,24 @@ const body = async (res: Response): Promise<any> => res.json();
  * `live` es el flujo vivo, atado igual que en `main.ts`: una variable que el
  * PUT reemplaza. Los tests miran ahí para comprobar qué está sirviendo el motor.
  */
-async function api(store: Store = openStore(':memory:')) {
+async function api(store: Store = openStore(':memory:'), sounds = fakeSounds()) {
   let live: FlowVersion = store.publish(flow('uno'));
   const flowStore: FlowStore = { get: () => live, set: (nuevo) => { live = nuevo; } };
 
-  const server = serveApi(flowStore, store, asterisk, 0);
+  const server = serveApi(flowStore, store, asterisk, sounds, 0);
   await once(server, 'listening');
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   return {
     store,
+    sounds,
     get: (path: string) => fetch(base + path),
     put: (path: string, body: unknown) =>
       fetch(base + path, { method: 'PUT', body: JSON.stringify(body) }),
+    // `Buffer` es un `Uint8Array`, que fetch acepta como cuerpo; el `as any` es
+    // solo porque los tipos de Node no traen el `BufferSource` del DOM.
+    putRaw: (path: string, body: Uint8Array) =>
+      fetch(base + path, { method: 'PUT', body: body as any }),
     live: () => live,
     close: () => { server.close(); store.close(); },
   };
@@ -170,5 +217,168 @@ test('una llamada sin versión conocida sale como null, no inventada', async () 
 
   const [llamada] = await body(await app.get('/api/calls'));
   assert.equal(llamada.flowVersion, null);
+  app.close();
+});
+
+// ─── Los audios ──────────────────────────────────────────────────────────────
+
+test('subir un audio devuelve su nombre saneado y su referencia', async () => {
+  const app = await api();
+
+  const res = await app.putRaw('/api/sounds/Saludo%20de%20A%C3%B1o%20Nuevo.mp3', Buffer.from('audio'));
+  const cuerpo = await body(res);
+
+  assert.equal(res.status, 200);
+  assert.equal(cuerpo.name, 'saludo-de-ano-nuevo');
+  assert.equal(cuerpo.media, 'sound:janus/saludo-de-ano-nuevo');
+  app.close();
+});
+
+test('el audio subido aparece en la lista', async () => {
+  const app = await api();
+  await app.putRaw('/api/sounds/bienvenida.wav', Buffer.from('audio'));
+
+  const lista = await body(await app.get('/api/sounds'));
+  assert.deepEqual(lista.map((s: { name: string }) => s.name), ['bienvenida']);
+  app.close();
+});
+
+test('sin audios subidos la lista va vacía, no falla', async () => {
+  const app = await api();
+  assert.deepEqual(await body(await app.get('/api/sounds')), []);
+  app.close();
+});
+
+// Con un mega, y no con dos bytes: un cuerpo pequeño cabe entero en el buffer
+// del socket, así que el cliente termina de escribir antes de que el servidor
+// conteste y el test pasaría igual aunque responder pronto cortase la subida.
+test('un nombre que no deja nada utilizable se rechaza con 400, aunque el fichero sea grande', async () => {
+  const app = await api();
+
+  const res = await app.putRaw('/api/sounds/....', Buffer.alloc(1024 * 1024, 1));
+  assert.equal(res.status, 400);
+  assert.match((await body(res)).issues[0].message, /ningún carácter utilizable/);
+  assert.deepEqual(app.sounds.guardados, [], 'no se guarda nada');
+  app.close();
+});
+
+// Responder antes de leer el cuerpo no le corta la conexión a quien sube:
+// `node:http` vacía solo lo que quede por llegar. Esto lo deja fijado, para que
+// nadie añada un drenado a mano creyendo que arregla algo.
+test('una respuesta temprana llega aunque queden bytes por subir', async () => {
+  const app = await api();
+
+  const res = await app.putRaw('/api/inventada', Buffer.alloc(1024 * 1024, 1));
+  assert.equal(res.status, 404);
+  app.close();
+});
+
+test('un nombre con ../ no escribe fuera: llega saneado o no llega', async () => {
+  const app = await api();
+
+  await app.putRaw('/api/sounds/..%2F..%2Fetc%2Fpasswd', Buffer.from('audio'));
+  for (const sound of app.sounds.guardados) assert.match(sound.name, /^[a-z0-9_-]+$/);
+  app.close();
+});
+
+test('un audio que pasa del límite se corta con 413 y no se guarda', async () => {
+  const app = await api();
+  const enorme = Buffer.alloc(11 * 1024 * 1024, 1);
+
+  const res = await app.putRaw('/api/sounds/enorme.wav', enorme);
+  assert.equal(res.status, 413);
+  assert.match((await body(res)).issues[0].message, /pasa del máximo/);
+  assert.deepEqual(app.sounds.guardados, []);
+  app.close();
+});
+
+test('un audio justo por debajo del límite sí entra', async () => {
+  const app = await api();
+  const grande = Buffer.alloc(9 * 1024 * 1024, 1);
+
+  const res = await app.putRaw('/api/sounds/grande.wav', grande);
+  assert.equal(res.status, 200);
+  assert.equal(app.sounds.guardados.length, 1);
+  app.close();
+});
+
+test('si la conversión falla, el error del motor llega tal cual', async () => {
+  const app = await api(openStore(':memory:'), fakeSounds('falta ffmpeg en la máquina'));
+
+  const res = await app.putRaw('/api/sounds/roto.txt', Buffer.from('no soy audio'));
+  assert.equal(res.status, 400);
+  assert.match((await body(res)).issues[0].message, /falta ffmpeg/);
+  app.close();
+});
+
+test('subir no toca el flujo vivo ni publica nada', async () => {
+  const app = await api();
+  await app.putRaw('/api/sounds/x.wav', Buffer.from('audio'));
+
+  assert.equal(app.live().version, 1);
+  assert.deepEqual(app.store.flowVersions().map((v) => v.version), [1]);
+  app.close();
+});
+
+test('un transporte que no existe se rechaza', async () => {
+  const app = await api();
+
+  const res = await app.put('/api/trunks', [
+    { name: 'x', host: 'sip.x.es', mode: 'identify', transport: 'carrier-pigeon', matchIp: '1.2.3.4' },
+  ]);
+  assert.equal(res.status, 400);
+  assert.match((await body(res)).issues[0].message, /transporte desconocido/);
+  app.close();
+});
+
+test('los dos transportes válidos se aceptan, con cualquier modo', async () => {
+  const app = await api();
+
+  const res = await app.put('/api/trunks', [
+    { name: 'porUdp', host: 'a', mode: 'register', transport: 'udp', username: 'u' },
+    { name: 'porTcp', host: 'b', mode: 'identify', transport: 'tcp', matchIp: '1.2.3.4' },
+  ]);
+  assert.equal(res.status, 200);
+  app.close();
+});
+
+test('una troncal sin transporte declarado se sigue aceptando', async () => {
+  const app = await api();
+
+  const res = await app.put('/api/trunks', [
+    { name: 'vieja', host: 'a', mode: 'identify', matchIp: '1.2.3.4' },
+  ]);
+  assert.equal(res.status, 200);
+  app.close();
+});
+
+// El host acaba dentro de una URI en un fichero de Asterisk, donde el `;` abre
+// un comentario: colarlo ahí genera una línea que carga a medias y en silencio.
+test('un host con parámetros de URI se rechaza y dice dónde va eso', async () => {
+  const app = await api();
+
+  const res = await app.put('/api/trunks', [
+    { name: 'x', host: 'sip.rtc.elevenlabs.io:5060;transport=tcp', mode: 'identify', matchIp: '1.2.3.4' },
+  ]);
+  assert.equal(res.status, 400);
+  assert.match((await body(res)).issues[0].message, /transporte se elige en su propio campo/);
+  app.close();
+});
+
+test('un host con espacios o barras tampoco pasa', async () => {
+  const app = await api();
+  for (const host of ['sip.x.es ; algo', 'sip.x.es\;transport=tcp', 'sip x es', 'sip.x.es/ruta']) {
+    const res = await app.put('/api/trunks', [{ name: 'x', host, mode: 'identify', matchIp: '1.2.3.4' }]);
+    assert.equal(res.status, 400, host);
+  }
+  app.close();
+});
+
+test('los hosts normales siguen pasando', async () => {
+  const app = await api();
+  for (const host of ['sip.masmovil.es', 'sip.rtc.elevenlabs.io:5060', '212.0.0.5', '212.0.0.5:5060']) {
+    const res = await app.put('/api/trunks', [{ name: 'x', host, mode: 'identify', matchIp: '1.2.3.4' }]);
+    assert.equal(res.status, 200, host);
+  }
   app.close();
 });

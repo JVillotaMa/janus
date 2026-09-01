@@ -143,9 +143,11 @@ src/
   types.ts       tipos compartidos. Solo declaraciones, se importa con `import type`
   cancel.ts      cancelable + Hungup. El primitivo del que depende todo lo demas
   time.ts        callVars
+  schema.ts      campos, unidades, defectos y variables de cada tipo de nodo
+  sounds.ts      audios subidos: saneado del nombre, conversion con ffmpeg, listado
   nodes.ts       NODES: entry, say, gather, dial, hangup
   interpreter.ts run, nextNode
-  validate.ts    comprobaciones del grafo antes de aceptarlo
+  validate.ts    comprobaciones del grafo y de los configs antes de aceptarlo
   pjsip.ts       genera la config PJSIP de las troncales. Funcion pura
   asterisk.ts    escribe el fichero, recarga y pregunta por endpoints
   server.ts      la API HTTP
@@ -153,7 +155,7 @@ src/
   calls.ts       script: imprime las ultimas llamadas
   main.ts        entrypoint: conecta ARI y ata las piezas
 flow.json        SOLO la semilla de una base vacia. El grafo vive en la BBDD
-tests/           137 tests, deterministas, sin Asterisk   -> pnpm test
+tests/           244 tests, deterministas, sin Asterisk   -> pnpm test
   fake-channel.ts    dobles de canal, bridge y cliente ARI
   interpreter.test.ts  bucle, aristas, horario, cancelacion, nodo entry
   nodes.test.ts        say / gather / hangup, con timers simulados
@@ -161,16 +163,85 @@ tests/           137 tests, deterministas, sin Asterisk   -> pnpm test
   time.test.ts         zonas IANA, DST, weekday ISO
   store.test.ts        flows, trunks, llamadas y la migracion de una base vieja
   server.test.ts       la API sobre un puerto de verdad, sin Asterisk
-  validate.test.ts     reglas del grafo y del nodo de entrada
+  validate.test.ts     reglas del grafo, del nodo de entrada y de los configs
   pjsip.test.ts        los dos modos de troncal, y el dialplan del repo
   asterisk.test.ts     escritura del fichero generado, sobre un tmpdir
+  sounds.test.ts       saneado del nombre, y conversion sobre un tmpdir
+  endpoint.test.ts     lo que cabe en el formulario de destino y lo que no
 ui/              editor React Flow (Vite)   -> cd ui && npm run dev
   App.jsx            el lienzo, el borrador y lo que se esta mirando
   Calls.jsx          las llamadas, cada una con su version
   Versions.jsx       las versiones publicadas: ver y cargar en el editor
+  NodeForm.jsx       selector de tipos, nombre y un input por campo
+  WhenForm.jsx       el arbol de condiciones de una arista
+  SoundField.jsx     subir un audio, elegir uno subido, o escribirlo
+  EndpointField.jsx  destino: extension interna, o numero por troncal
+  Trunks.jsx         TrunkPicker (lo usan entry y dial) + el panel del entry
+  graph.js           LOGICA PURA: etiquetas, arbol <-> jsonlogic, coerce, ids
+  graph.test.js      49 tests    -> los corre `node --test` desde la raiz
+  *.test.jsx         60 tests con jsdom   -> cd ui && npm test
 asterisk-config/etc    config de Asterisk, versionada y montada en el contenedor
 asterisk-config/sounds sonidos core, montados en /var/lib/asterisk/sounds
 ```
+
+**El grafo se edita con formularios, no con JSON.** `src/schema.ts` declara, por tipo de nodo, sus
+campos —nombre, tipo, unidad, obligatoriedad y valor por defecto— y las variables que deja en
+`ctx.vars` al salir. Es la unica declaracion de eso: la leen `validate.ts` para rechazar un config
+incompleto, `nodes.ts` para los defectos y la UI para pintar los formularios. **La UI importa
+`src/schema.ts` directamente**, sin ruta de API: anadir una habria obligado a migrar a Hono por una
+tabla estatica.
+
+`gather.timeout` va en milisegundos y `dial.timeout` en segundos. **No los unifiques**: cambiar la
+unidad reinterpreta en silencio los configs de versiones ya publicadas, que son inmutables. Por eso
+la unidad es una columna del esquema, y por eso al cambiar el tipo de un nodo un campo solo se
+conserva si coinciden nombre, tipo **y unidad**.
+
+Las condiciones de las aristas se construyen como un arbol de grupos: cada grupo con su union —Y u
+O— y su casilla de negado, y dentro comparaciones y otros grupos. Mezclar Y con O es anidar. Dos
+detalles que no son opcionales:
+
+- **`fromWhen` devuelve `null` cuando algo no cabe**, y eso se enseña en solo lectura. Nunca una
+  aproximacion: reabrir una condicion como algo parecido cambia por donde va una llamada real.
+- **El arbol que se edita es estado del formulario, no una lectura del `when`.** Un grupo de un
+  solo hijo se guarda pelado, asi que releerlo del JSON desharia el grupo recien creado antes de
+  poder meterle la segunda condicion.
+
+Los ids de nodo **se generan solos** (`n-7f3a`, con reintento si chocan) y no se enseñan en ningun
+sitio: el rotulo es `name`, y sin nombre, el tipo mas un resumen de su config. `nodo-${length + 1}`
+colisionaba al borrar un nodo del medio y crear otro.
+
+**En un destino de llamada, lo de despues de la arroba es un NOMBRE DE ENDPOINT de
+`pjsip.conf`, no un dominio.** `PJSIP/+1000000000@sip.rtc.elevenlabs.io:5060` da
+`endpoint '<dominio>' was not found`; lo correcto es dar de alta la troncal
+`eleven` con ese host y llamar a `PJSIP/+1000000000@eleven`. El campo se edita
+con formulario —extension interna, o destino mas troncal— y `validate` avisa si
+la troncal no esta dada de alta. Aviso y no error: montar el flujo antes que la
+troncal es un orden de trabajo valido. Lo que no encaja (`PJSIP/x/sip:...`,
+`Local/...`) se sigue escribiendo a mano, sin deformarlo.
+
+**El modo de un control con estado propio no se lee del valor guardado.** El del
+destino y el arbol del `when` son el mismo caso: mientras eliges "por una
+troncal" y aun no has elegido cual, lo guardado es `PJSIP/x`, que releido seria
+una extension interna. Por eso `NodeForm` mete el id del nodo en la `key`, para
+que al cambiar de nodo el campo se remonte y resiembre.
+
+**La traza se rotula contra el grafo de la version con la que corrio esa llamada**, nunca contra el
+de ahora. Por eso renombrar un nodo y publicar no reescribe como se lee el recorrido de las
+llamadas de ayer. Sin `flow_version` no hay grafo contra el que resolver y se enseñan los ids, que
+es la verdad.
+
+**`server.test.ts` calla al motor con `console.log = () => {}`, y no es cosmetico.**
+`node --test` usa la salida estandar del proceso hijo para su protocolo
+serializado, asi que lo que el motor imprima se intercala con esos bytes y los
+corrompe: el runner suelta `Unable to deserialize cloned data` y a veces da por
+fallado un fichero que paso entero. Solo pasa al correr varios ficheros a la vez,
+asi que parece un flake y no lo es. No esconde nada: los fallos de test viajan
+por el protocolo, no por `console.log`.
+
+**Dos runners de test, y la frontera es la extension del fichero.** `node --test` no transforma
+JSX: lo puro es `*.test.js` y lo corre desde la raiz —puede importar `src/*.ts`, borrado de tipos
+mediante—; lo que necesita DOM es `*.test.jsx` y lo corre vitest dentro de `ui/`. `pnpm test`
+encadena los dos.
 
 Nodos implementados: `entry`, `say`, `gather`, `dial`, `hangup`. Falta
 `ai_agent`. `branch`, `http` y `answer` estan descartados a proposito.
@@ -190,7 +261,7 @@ El enrutado por horario NO es un tipo de nodo: `callVars` siembra `hhmm`,
 comparan con jsonlogic normal. La zona sale de `flow.timezone` (IANA, nunca un
 offset) y se calcula una sola vez desde `ctx.startedAt`, no en cada nodo.
 
-El motor sirve seis rutas con `node:http`, **solo en `127.0.0.1`**:
+El motor sirve siete rutas con `node:http`, **solo en `127.0.0.1`**:
 
 ```
 GET/PUT /api/flow           el grafo vivo. El PUT publica version nueva
@@ -198,11 +269,22 @@ GET     /api/flows          las versiones publicadas; con ?version=N, ese grafo
 GET     /api/calls          las ultimas llamadas con su traza y su version
 GET/PUT /api/trunks         las troncales. El PUT recarga Asterisk
 GET     /api/trunks/config  la config generada, con las contrasenas tapadas
+GET     /api/sounds         los audios subidos
+PUT     /api/sounds/<nombre>  sube uno, con el fichero en el CUERPO CRUDO
 ```
 
-Seis es el techo que marca el comentario `ponytail:` de `server.ts`: la
-siguiente ruta que haga falta se atiende migrando a Hono, no anadiendo otro
-`if`.
+El comentario `ponytail:` de `server.ts` decia que la sexta era el techo y que la
+septima obligaba a migrar a Hono. **Se paso a proposito**: `/api/sounds` es un
+bloque calcado al de `/api/trunks` y no usa nada de lo que un framework aporta.
+El comentario dice ahora que la octava si — o que hay que admitir que no es un
+techo y quitarlo.
+
+**Nada de multipart para subir.** El fichero va en el cuerpo del PUT y el nombre
+en la URL: no hay mas campos que mandar, asi que un multipart solo anadiria un
+parser de limites para transportar lo mismo. El limite de tamano se comprueba
+**mientras se lee** —`content-length` lo manda el cliente— y el 413 se responde
+ANTES de cortar la conexion: destruir el socket primero deja al cliente esperando
+una respuesta que ya no puede llegar.
 
 No hay autenticacion y no la va a haber mientras el puerto no salga de la
 maquina: se llega por tunel SSH, que autentica mejor que nada que escribieramos.
@@ -272,12 +354,40 @@ conectado. Nada de AMI ni de `asterisk -rx`.
 
 Reglas que no conviene romper:
 
+- **Una troncal declara por que protocolo habla**, y es un eje independiente del
+  modo de autenticacion: se puede registrar por TCP o autenticar por IP sobre UDP.
+  `pjsip.conf` define `[transport-udp]` y `[transport-tcp]`, los dos en el 5060.
+  Hay proveedores que anuncian UDP en su SRV y **no lo atienden**: los REGISTER
+  salen y no vuelve nada, que en el log es indistinguible de un problema de red,
+  de NAT o de credenciales. Si pasa eso, prueba TCP antes de sospechar de nada mas.
+  Una troncal sin transporte declarado genera el mismo texto que antes de que se
+  pudiera elegir, asi que las de antes no cambian de comportamiento.
+- **En un fichero de Asterisk el `;` abre un comentario.** Un parametro de URI va
+  escapado (`contact=sip:host\;transport=tcp`); sin la barra, Asterisk lee
+  `contact=sip:host` y tira el resto EN SILENCIO: la config carga sin quejarse y
+  usa otro transporte. Lo cubre un test sobre el texto generado.
 - **El resto de `asterisk-config/etc/` esta versionado y el motor no lo toca.**
   La linea `#include pjsip_janus.conf` de `pjsip.conf` y el contexto `[janus]` de
   `extensions.conf` son texto commiteado, no generado. Generar una constante en
   cada arranque no compra nada.
-- **`pjsip_janus.conf` es el unico fichero fuera de git**, porque es el unico con
-  contrasenas de proveedor. Es un derivado: se borra y vuelve al arrancar.
+- **El motor escribe en DOS sitios**, y los dos son suyos: `pjsip_janus.conf` y
+  el directorio `sounds/en/janus/`. `pjsip_janus.conf` es un derivado con
+  contrasenas de proveedor: se borra y vuelve al arrancar. Los audios subidos NO
+  son un derivado —no se pueden regenerar— pero caen dentro de
+  `asterisk-config/sounds/`, que ya estaba fuera de git porque los de serie pesan.
+- **Los audios se convierten SIEMPRE a alaw 8 kHz mono con ffmpeg**, aunque el
+  fichero ya viniera bien. Mirar la cabecera para decidir anade la rama donde
+  estaria el fallo: creerte que un wav es de 8 kHz porque lo dice, y que suene a
+  ardilla en la llamada. alaw es ademas el codec al que van las troncales, asi que
+  se reproduce sin transcodificar, y un segundo son 8000 bytes exactos.
+- **ffmpeg es requisito del sistema, pero solo para subir.** Sin el, el motor
+  arranca, atiende llamadas y publica flujos; lo que falla es la subida, diciendo
+  que falta.
+- **El nombre de un audio se sanea con lista de permitidos** (`[a-z0-9_-]`), y eso
+  ES la defensa contra escribir fuera del directorio. No busques ademas `..`: una
+  lista de prohibidos siempre se olvida de uno, y anadirla sugiere que el saneado
+  no basta. Los audios NO se pueden borrar: una version publicada es inmutable y
+  puede referenciar uno.
 - **Las contrasenas no entran en el grafo.** El nodo `entry` solo guarda el
   nombre de la troncal. El grafo se sirve sin auth y sus versiones son
   inmutables: un secreto escrito ahi queda publicado y no se puede retirar.

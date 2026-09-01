@@ -10,6 +10,7 @@ import { Hungup } from './cancel.ts';
 import { run } from './interpreter.ts';
 import { APP, DIALED } from './nodes.ts';
 import { endpointStates, reload, writeTrunks } from './asterisk.ts';
+import { ensureSounds, listSounds, saveSound } from './sounds.ts';
 import { serveApi } from './server.ts';
 import { openStore } from './store.ts';
 import type { FlowVersion, Outcome } from './store.ts';
@@ -43,11 +44,25 @@ const active = new Map<string, AbortController>();
 const configDir =
   process.env.ASTERISK_ETC ?? new URL('../asterisk-config/etc', import.meta.url).pathname;
 
+// El árbol de sonidos, que en el laboratorio se monta en el contenedor. Es el
+// segundo sitio donde escribe el motor, y como el otro, solo dentro de lo suyo.
+const soundsDir =
+  process.env.ASTERISK_SOUNDS ?? new URL('../asterisk-config/sounds', import.meta.url).pathname;
+
 /** Vuelca las troncales a Asterisk y las aplica. */
 const apply = async (trunks: Trunk[]) => {
   writeTrunks(configDir, trunks);
   await reload(client, 'res_pjsip.so');
 };
+
+// Se crea al arrancar, no al subir el primer audio: una ruta mal puesta o sin
+// permisos tiene que verse aquí y no como una biblioteca que parece vacía.
+try {
+  const destino = ensureSounds(soundsDir);
+  console.log(`✓ Audios en ${destino}: ${listSounds(soundsDir).length}`);
+} catch (err) {
+  console.error(`✗ no se puede escribir en ${soundsDir}:`, (err as Error).message);
+}
 
 try {
   await apply(store.trunks());
@@ -115,7 +130,9 @@ client.on('ChannelHangupRequest', abort);
 await (client as any).start(APP);
 console.log(`janus escuchando como app "${APP}"`);
 
-serveApi({ get: () => flow, set: (nuevo) => { flow = nuevo; } }, store, {
-  apply,
-  states: (names) => endpointStates(client, names),
-});
+serveApi(
+  { get: () => flow, set: (nuevo) => { flow = nuevo; } },
+  store,
+  { apply, states: (names) => endpointStates(client, names) },
+  { list: () => listSounds(soundsDir), save: (name, bytes) => saveSound(soundsDir, name, bytes) },
+);

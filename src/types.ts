@@ -18,6 +18,14 @@ export interface Trunk {
   name: string;
   host: string;
   mode: 'register' | 'identify';
+  /**
+   * Por qué protocolo habla. Eje independiente del modo: se puede registrar por
+   * TCP o autenticar por IP sobre UDP.
+   *
+   * Sin declarar, se comporta como antes de que se pudiera elegir: sale por el
+   * transporte por defecto de Asterisk, que es UDP.
+   */
+  transport?: 'udp' | 'tcp' | null;
   username?: string | null;
   password?: string | null;
   matchIp?: string | null;
@@ -43,8 +51,14 @@ export interface Ctx {
 }
 
 export interface NodeSpec {
+  /**
+   * Identificador opaco: lo referencian las aristas y `call_steps`, así que no
+   * se puede cambiar. El editor lo genera y no lo enseña.
+   */
   id: string;
   type: string;
+  /** Rótulo que se lee en el lienzo y en la traza. El motor lo ignora. */
+  name?: string;
   config?: Record<string, any>;
   /** Posición en el editor. El motor la ignora. */
   position?: { x: number; y: number };
