@@ -11,9 +11,12 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import Calls from './Calls.jsx';
+import NodeForm, { TypePicker } from './NodeForm.jsx';
 import Trunks from './Trunks.jsx';
 import Versions from './Versions.jsx';
-import { edgeLabel, isFallback, layout } from './graph.js';
+import WhenForm from './WhenForm.jsx';
+import { edgeLabel, isFallback, layout, newId, nodeLabel } from './graph.js';
+import { NODE_TYPES, defaults } from '../../src/schema.ts';
 
 const API = '/api/flow';
 
@@ -46,7 +49,7 @@ const nodeStyle = (type) => {
 function EntryNode({ data }) {
   return (
     <>
-      <div style={{ fontWeight: 600 }}>▼ Entrada</div>
+      <div style={{ fontWeight: 600 }}>▼ {data.name ?? 'Entrada'}</div>
       <div style={{ color: '#666', marginTop: 2 }}>
         {data.config?.trunk ?? 'sin troncal'}
       </div>
@@ -68,8 +71,9 @@ function toGraph(flow) {
       ...(node.type === 'entry' ? { type: 'entry' } : {}),
       style: nodeStyle(node.type),
       data: {
-        label: `${node.id}  ·  ${node.type}`,
+        label: nodeLabel(node),
         type: node.type,
+        name: node.name,
         config: node.config ?? {},
       },
     })),
@@ -97,6 +101,7 @@ function toFlow(meta, nodes, edges) {
     nodes: nodes.map((node) => ({
       id: node.id,
       type: node.data.type,
+      ...(node.data.name ? { name: node.data.name } : {}),
       ...(Object.keys(node.data.config ?? {}).length ? { config: node.data.config } : {}),
       position: node.position,
     })),
@@ -144,7 +149,7 @@ export default function App() {
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
   const [selected, setSelected] = useState(null);
-  const [draft, setDraft] = useState('');
+  const [picking, setPicking] = useState(false);
   const [status, setStatus] = useState('cargando…');
   const [call, setCall] = useState(null);
   const [issues, setIssues] = useState([]);
@@ -174,6 +179,27 @@ export default function App() {
   }, []);
 
   const path = useMemo(() => traversed(call), [call]);
+
+  // Lo mínimo del grafo que necesita el constructor de condiciones: de qué tipo
+  // es el nodo del que sale cada arista, para saber qué variables ofrecer.
+  const plainFlow = useMemo(
+    () => ({ nodes: nodes.map((node) => ({ id: node.id, type: node.data.type })) }),
+    [nodes],
+  );
+
+  /**
+   * El rótulo de un paso de la traza.
+   *
+   * Se resuelve contra el grafo de la versión con la que corrió la llamada, no
+   * contra el que se está editando: por eso renombrar un nodo y publicar no
+   * reescribe cómo se lee el recorrido de las llamadas de ayer. Sin versión
+   * guardada no hay grafo contra el que resolver, y se enseña el id tal cual.
+   */
+  const stepLabel = (step) => {
+    if (step.startsWith('!')) return step;
+    const node = viewing?.flow?.nodes.find((n) => n.id === step);
+    return node ? nodeLabel(node) : step;
+  };
 
   const viewed = useMemo(() => (viewing ? toGraph(viewing.flow) : null), [viewing]);
   const shownNodes = viewed ? viewed.nodes : nodes;
@@ -294,78 +320,57 @@ export default function App() {
     setCall(null);
   };
 
-  const select = (kind, element) => {
-    setSelected({ kind, id: element.id });
-    setDraft(
-      JSON.stringify(
-        kind === 'node'
-          ? { type: element.data.type, config: element.data.config ?? {} }
-          : { when: element.data?.when ?? null },
-        null,
-        2,
-      ),
-    );
-  };
+  const select = (kind, element) => setSelected({ kind, id: element.id });
 
-  /** Vuelca el textarea sobre el elemento seleccionado. */
-  const applyDraft = () => {
-    let parsed;
-    try {
-      parsed = JSON.parse(draft);
-    } catch (err) {
-      setStatus(`JSON inválido: ${err.message}`);
-      return;
-    }
-    if (selected.kind === 'node') {
-      setNodes((ns) =>
-        ns.map((n) =>
-          n.id === selected.id
-            ? {
-                ...n,
-                data: {
-                  ...n.data,
-                  type: parsed.type,
-                  config: parsed.config ?? {},
-                  label: `${n.id}  ·  ${parsed.type}`,
-                },
-                style: nodeStyle(parsed.type),
-              }
-            : n,
-        ),
-      );
-    } else {
-      setEdges((es) =>
-        relabel(
-          es.map((e) => (e.id === selected.id ? { ...e, data: { when: parsed.when } } : e)),
-        ),
-      );
-    }
-    setStatus('elemento actualizado — falta aplicar al motor');
-  };
-
-  /** Aplica la config del formulario al nodo, sin pasar por el JSON. */
-  const setConfig = (id, config) => {
+  /**
+   * Aplica un cambio del formulario al nodo: nombre, tipo o config.
+   *
+   * El rótulo se recalcula aquí, que es el único sitio donde cambia lo que lo
+   * determina; así el lienzo y el panel no pueden decir cosas distintas.
+   */
+  const patchNode = (id, patch) => {
     setNodes((ns) =>
-      ns.map((n) => (n.id === id ? { ...n, data: { ...n.data, config } } : n)),
+      ns.map((n) => {
+        if (n.id !== id) return n;
+        const data = { ...n.data, ...patch };
+        return {
+          ...n,
+          data: { ...data, label: nodeLabel({ id, ...data }) },
+          style: nodeStyle(data.type),
+        };
+      }),
     );
     setStatus('elemento actualizado — falta aplicar al motor');
   };
 
-  const addNode = () => {
-    const id = `nodo-${nodes.length + 1}`;
+  /** La condición de una arista, tal y como la construye el formulario. */
+  const setEdgeWhen = (id, when) => {
+    setEdges((es) =>
+      relabel(es.map((e) => (e.id === id ? { ...e, data: { when: when ?? null } } : e))),
+    );
+    setStatus('elemento actualizado — falta aplicar al motor');
+  };
+
+  const addNode = (type) => {
+    setPicking(false);
+    const id = newId(nodes.map((node) => node.id));
+    const config = defaults(type);
     setNodes((ns) => [
       ...ns,
       {
         id,
         position: { x: 400, y: 40 + ns.length * 20 },
-        style: nodeStyle('say'),
-        data: { label: `${id}  ·  say`, type: 'say', config: { media: 'sound:hello-world' } },
+        style: nodeStyle(type),
+        data: { label: nodeLabel({ id, type, config }), type, config },
       },
     ]);
+    setStatus(`${NODE_TYPES[type].label} añadido — falta aplicar al motor`);
   };
 
   const selectedNode =
     selected?.kind === 'node' ? nodes.find((node) => node.id === selected.id) : null;
+  const selectedEdge =
+    selected?.kind === 'edge' ? edges.find((edge) => edge.id === selected.id) : null;
   const zoomedNode = zoomed ? nodes.find((node) => node.id === zoomed) : null;
 
   const push = async () => {
@@ -452,9 +457,7 @@ export default function App() {
           >
             {viewing && <strong>v{viewing.version}</strong>}
             {call ? (
-              <span style={{ fontFamily: 'monospace' }}>
-                {call.trace.map((step) => step.node).join(' → ')}
-              </span>
+              <span>{call.trace.map((step) => stepLabel(step.node)).join(' → ')}</span>
             ) : (
               <span style={{ color: '#666' }}>versión publicada · solo lectura</span>
             )}
@@ -513,11 +516,13 @@ export default function App() {
         }}
       >
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={addNode} disabled={!!viewing}>+ nodo</button>
+          <button onClick={() => setPicking((v) => !v)} disabled={!!viewing}>+ nodo</button>
           <button onClick={push} disabled={!!viewing} style={{ fontWeight: 600 }}>
             Aplicar al motor
           </button>
         </div>
+
+        {picking && !viewing && <TypePicker onPick={addNode} onCancel={() => setPicking(false)} />}
 
         <small style={{ color: issues.some((i) => i.level === 'error') ? '#cf222e' : '#666' }}>
           {status}
@@ -555,28 +560,18 @@ export default function App() {
             Estás mirando la v{viewing.version}, que ya está publicada y no se puede editar.
             Para partir de ella, cárgala en el editor.
           </small>
-        ) : selected ? (
-          <>
-            <strong>
-              {selected.kind === 'node' ? 'Nodo' : 'Arista'} {selected.id}
-            </strong>
-            {selectedNode?.data.type === 'entry' ? (
-              <Trunks
-                config={selectedNode.data.config ?? {}}
-                onChange={(config) => setConfig(selectedNode.id, config)}
-              />
-            ) : (
-              <>
-                <textarea
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  spellCheck={false}
-                  style={{ flex: 1, fontFamily: 'monospace', fontSize: 12, padding: 8 }}
-                />
-                <button onClick={applyDraft}>Guardar en el elemento</button>
-              </>
-            )}
-          </>
+        ) : selectedNode ? (
+          <NodeForm
+            node={selectedNode}
+            onChange={(patch) => patchNode(selectedNode.id, patch)}
+            onNotice={setStatus}
+          />
+        ) : selectedEdge ? (
+          <WhenForm
+            flow={plainFlow}
+            edge={selectedEdge}
+            onChange={(when) => setEdgeWhen(selectedEdge.id, when)}
+          />
         ) : (
           <small style={{ color: '#999' }}>Pincha un nodo o una arista para editarlo.</small>
         )}
@@ -598,12 +593,12 @@ export default function App() {
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
-              <strong>Entrada · {zoomedNode.id}</strong>
+              <strong>Entrada · {nodeLabel({ ...zoomedNode.data, id: zoomedNode.id })}</strong>
               <button onClick={() => setZoomed(null)}>cerrar</button>
             </div>
             <Trunks
               config={zoomedNode.data.config ?? {}}
-              onChange={(config) => setConfig(zoomedNode.id, config)}
+              onChange={(config) => patchNode(zoomedNode.id, { config })}
               wide
             />
           </div>

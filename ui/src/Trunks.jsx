@@ -14,21 +14,27 @@ const input = { width: '100%', padding: '4px 6px', fontSize: 12, boxSizing: 'bor
 const label = { fontSize: 11, color: '#666', marginTop: 6, display: 'block' };
 
 /** Una troncal nueva, en blanco. */
-const empty = () => ({ name: '', host: '', mode: 'register', username: '', password: '', matchIp: '' });
+const empty = () => ({
+  name: '', host: '', mode: 'register', transport: 'udp',
+  username: '', password: '', matchIp: '',
+});
 
 /**
- * Formulario del nodo de entrada: qué troncal atiende este flujo y si Asterisk
- * la tiene cargada.
+ * Elegir una troncal, ver si Asterisk la reconoce, y dar de alta una nueva.
  *
- * El mismo componente sirve en el panel lateral y en el modal; `wide` solo añade
- * lo que no cabe en 320px.
+ * Lo usan los dos nodos que necesitan una troncal: el de entrada, para decir por
+ * dónde entra la llamada, y el de llamada, como la parte de después de la arroba
+ * de su destino. En el segundo no es documentación: es lo que enruta.
+ *
+ * @param value Nombre de la troncal elegida, o vacío.
+ * @param onChange Recibe el nombre nuevo, o `undefined` si se deselecciona.
+ * @param label Qué dice la etiqueta, que no es lo mismo entrar que salir.
  */
-export default function Trunks({ config, onChange, wide = false }) {
+export function TrunkPicker({ value, onChange, label: texto }) {
   const [trunks, setTrunks] = useState([]);
   const [draft, setDraft] = useState(null);
   const [status, setStatus] = useState('');
   const [issues, setIssues] = useState([]);
-  const [generated, setGenerated] = useState('');
 
   const load = useCallback(() => {
     fetch('/api/trunks')
@@ -38,14 +44,6 @@ export default function Trunks({ config, onChange, wide = false }) {
   }, []);
 
   useEffect(load, [load]);
-
-  useEffect(() => {
-    if (!wide) return;
-    fetch('/api/trunks/config')
-      .then((res) => res.text())
-      .then(setGenerated)
-      .catch(() => setGenerated('(no se ha podido leer)'));
-  }, [wide, trunks]);
 
   /** Guarda la lista entera: la API la lee y la escribe completa. */
   const save = async (list) => {
@@ -67,14 +65,15 @@ export default function Trunks({ config, onChange, wide = false }) {
 
   const remove = (name) => save(trunks.filter((trunk) => trunk.name !== name));
 
-  const current = trunks.find((trunk) => trunk.name === config.trunk);
+  const current = trunks.find((trunk) => trunk.name === value);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <label style={label}>Troncal por la que entra la llamada</label>
+      <label style={label}>{texto}</label>
       <select
-        value={config.trunk ?? ''}
-        onChange={(e) => onChange({ ...config, trunk: e.target.value || undefined })}
+        aria-label={texto}
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value || undefined)}
         style={input}
       >
         <option value="">— ninguna —</option>
@@ -96,7 +95,7 @@ export default function Trunks({ config, onChange, wide = false }) {
         </small>
       )}
 
-      {config.trunk && !current && (
+      {value && !current && (
         <small style={{ fontSize: 11, color: '#cf222e' }}>
           esta troncal no está dada de alta
         </small>
@@ -106,16 +105,27 @@ export default function Trunks({ config, onChange, wide = false }) {
 
       {draft ? (
         <>
-          <label style={label}>Nombre</label>
-          <input style={input} value={draft.name} placeholder="masmovil"
+          <label style={label} htmlFor="trunk-name">Nombre de la troncal</label>
+          <input id="trunk-name" style={input} value={draft.name} placeholder="masmovil"
             onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
 
-          <label style={label}>Host del proveedor</label>
-          <input style={input} value={draft.host} placeholder="sip.masmovil.es"
+          <label style={label} htmlFor="trunk-host">Host del proveedor</label>
+          <input id="trunk-host" style={input} value={draft.host} placeholder="sip.masmovil.es"
             onChange={(e) => setDraft({ ...draft, host: e.target.value })} />
 
-          <label style={label}>Cómo te autentica</label>
-          <select style={input} value={draft.mode}
+          <label style={label} htmlFor="trunk-transport">Por qué protocolo habla</label>
+          <select id="trunk-transport" style={input} value={draft.transport}
+            onChange={(e) => setDraft({ ...draft, transport: e.target.value })}>
+            <option value="udp">UDP (lo normal)</option>
+            <option value="tcp">TCP</option>
+          </select>
+          <small style={{ fontSize: 11, color: '#666' }}>
+            Hay proveedores que anuncian UDP y no lo atienden: los registros salen y no vuelve
+            nada. Si pasa eso, prueba TCP.
+          </small>
+
+          <label style={label} htmlFor="trunk-mode">Cómo te autentica</label>
+          <select id="trunk-mode" style={input} value={draft.mode}
             onChange={(e) => setDraft({ ...draft, mode: e.target.value })}>
             <option value="register">Con usuario y contraseña (registro)</option>
             <option value="identify">Por IP de origen</option>
@@ -123,17 +133,17 @@ export default function Trunks({ config, onChange, wide = false }) {
 
           {draft.mode === 'register' ? (
             <>
-              <label style={label}>Usuario</label>
-              <input style={input} value={draft.username}
+              <label style={label} htmlFor="trunk-username">Usuario</label>
+              <input id="trunk-username" style={input} value={draft.username}
                 onChange={(e) => setDraft({ ...draft, username: e.target.value })} />
-              <label style={label}>Contraseña</label>
-              <input style={input} type="password" value={draft.password}
+              <label style={label} htmlFor="trunk-password">Contraseña</label>
+              <input id="trunk-password" style={input} type="password" value={draft.password}
                 onChange={(e) => setDraft({ ...draft, password: e.target.value })} />
             </>
           ) : (
             <>
-              <label style={label}>IP del proveedor</label>
-              <input style={input} value={draft.matchIp} placeholder="212.0.0.5"
+              <label style={label} htmlFor="trunk-matchip">IP del proveedor</label>
+              <input id="trunk-matchip" style={input} value={draft.matchIp} placeholder="212.0.0.5"
                 onChange={(e) => setDraft({ ...draft, matchIp: e.target.value })} />
             </>
           )}
@@ -158,6 +168,34 @@ export default function Trunks({ config, onChange, wide = false }) {
           {issue.where}: {issue.message}
         </small>
       ))}
+    </div>
+  );
+}
+
+/**
+ * Formulario del nodo de entrada: qué troncal atiende este flujo y, en la vista
+ * ampliada, la configuración que el motor le ha escrito a Asterisk.
+ *
+ * `wide` solo añade lo que no cabe en 320px.
+ */
+export default function Trunks({ config, onChange, wide = false }) {
+  const [generated, setGenerated] = useState('');
+
+  useEffect(() => {
+    if (!wide) return;
+    fetch('/api/trunks/config')
+      .then((res) => res.text())
+      .then(setGenerated)
+      .catch(() => setGenerated('(no se ha podido leer)'));
+  }, [wide, config.trunk]);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <TrunkPicker
+        value={config.trunk}
+        onChange={(trunk) => onChange({ ...config, trunk })}
+        label="Troncal por la que entra la llamada"
+      />
 
       {wide && (
         <>
