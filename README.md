@@ -14,7 +14,7 @@ Montar enrutado condicional serio sobre SIP hoy significa bajar al dialplan de
 Asterisk. Eso lo deja fuera del alcance de cualquiera que no sea ingeniero de
 telefonía, y convierte cada cambio de horario o cada nueva regla en un
 despliegue.
-
+ 
 El caso concreto que lo motiva: agentes de voz IA. El agente se conecta como
 endpoint SIP, así que meterlo en una llamada es trivial — un `Dial` y ya. Pero
 un `Dial` es un **handoff**, no una orquestación. En cuanto entregas la llamada
