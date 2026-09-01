@@ -115,6 +115,9 @@ Nada de esto necesita build. Node 24 ejecuta TypeScript directamente.
 
 ### En una máquina de verdad
 
+La guía completa —Twilio, las troncales, el flujo y qué mirar cuando algo falla—
+está en [DESPLIEGUE.md](DESPLIEGUE.md). El resumen:
+
 Un solo comando deja la caja lista: Asterisk, el motor, el editor servido por
 HTTPS con contraseña, y el cortafuegos cerrado.
 
