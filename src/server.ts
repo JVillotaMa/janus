@@ -228,6 +228,7 @@ export function serveApi(
           return void json(400, { ok: false, issues: [jsonRoto(err as Error)] });
         }
 
+        list = Array.isArray(list) ? list.map(limpiar) : list;
         const issues = validateTrunks(list);
         if (issues.length) {
           console.log(`✗ troncales rechazadas: ${issues.length} errores`);
@@ -338,6 +339,26 @@ function sinSecreto(trunk: Trunk): Omit<Trunk, 'password'> {
 }
 
 /**
+ * Recorta los espacios antes de validar y de guardar.
+ *
+ * El orden importa: validar el valor recortado y guardar el original es
+ * exactamente como se cuela un `contact=sip: host`, con el espacio dentro de la
+ * URI. Asterisk rechaza ese aor, el endpoint que lo referencia se cae con él, y
+ * lo que ves es que no hay ningún objeto cargado y ni un error que lo explique.
+ *
+ * La contraseña no se toca: recortarla rompería una que de verdad lleve espacios.
+ * En `matchIp` se quitan todos, porque es una lista separada por comas y nadie
+ * escribe `a,b` sin poner un espacio detrás de la coma.
+ */
+const limpiar = (trunk: Trunk): Trunk => ({
+  ...trunk,
+  name: trunk?.name?.trim(),
+  host: trunk?.host?.trim(),
+  username: trunk?.username?.trim(),
+  matchIp: trunk?.matchIp?.replace(/\s+/g, ''),
+});
+
+/**
  * Comprueba lo que llega por la API antes de guardarlo.
  *
  * Una troncal a medias genera configuración que Asterisk carga sin quejarse y
@@ -364,7 +385,7 @@ function validateTrunks(list: Trunk[]): Issue[] {
     //
     // ponytail: sin IPv6, que necesitaría corchetes. Cuando haga falta, aquí.
     if (!trunk?.host?.trim()) error('falta el host del proveedor');
-    else if (!/^[A-Za-z0-9._-]+(:[0-9]{1,5})?$/.test(trunk.host.trim())) {
+    else if (!/^[A-Za-z0-9._-]+(:[0-9]{1,5})?$/.test(trunk.host)) {
       error(
         `el host "${trunk.host}" no vale: solo el nombre o la IP, con puerto opcional. ` +
           'El transporte se elige en su propio campo',

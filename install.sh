@@ -104,6 +104,35 @@ docker run -d --restart unless-stopped --name asterisk --network host \
   andrius/asterisk >/dev/null
 ok "levantado, y se levanta solo al reiniciar"
 
+# El motor corre como root y Asterisk, dentro del contenedor, NO. Un fichero
+# `root:root 0600` no lo puede leer, y Asterisk reporta un fichero ilegible
+# EXACTAMENTE igual que uno que no existe —«listed as a #include but it does not
+# exist»— asi que el sintoma no apunta a los permisos por ninguna parte.
+#
+# Se crea aqui con el dueno correcto: Node solo aplica el modo al CREAR, asi que
+# el motor lo reescribe en cada cambio de troncal y la propiedad sobrevive.
+GENERADO="$REPO/asterisk-config/etc/pjsip_janus.conf"
+for _ in $(seq 15); do docker exec asterisk true 2>/dev/null && break; sleep 1; done
+UID_AST="$(docker exec asterisk id -u asterisk 2>/dev/null || echo 0)"
+[ -f "$GENERADO" ] || printf '; generado por Janus\n' > "$GENERADO"
+chown "$UID_AST" "$GENERADO"
+chmod 600 "$GENERADO"
+ok "pjsip_janus.conf legible por Asterisk (uid $UID_AST)"
+
+# El motor corre como root y Asterisk, dentro del contenedor, NO. Un fichero
+# `root:root 0600` no lo puede leer — y Asterisk reporta un fichero ilegible
+# EXACTAMENTE igual que uno que no existe («listed as a #include but it does not
+# exist»), asi que el sintoma no apunta a los permisos por ningun lado.
+#
+# Se crea aqui con el dueno correcto. `writeFileSync` solo aplica el modo al
+# crear, asi que el motor lo reescribe mil veces y la propiedad sobrevive.
+GENERADO="$REPO/asterisk-config/etc/pjsip_janus.conf"
+for i in $(seq 15); do docker exec asterisk true 2>/dev/null && break; sleep 1; done
+UID_AST="$(docker exec asterisk id -u asterisk 2>/dev/null || echo 0)"
+[ -f "$GENERADO" ] || printf '; generado por Janus\n' > "$GENERADO"
+chown "$UID_AST" "$GENERADO" && chmod 600 "$GENERADO"
+ok "pjsip_janus.conf legible por Asterisk (uid $UID_AST)"
+
 # ── el motor como servicio ───────────────────────────────────────────────────
 # `Restart=always` ES el reintento que el motor no tiene: hace `await ari.connect`
 # al arrancar sin red de seguridad, así que si Asterisk aún no está, muere y
@@ -198,6 +227,23 @@ for i in $(seq 30); do
 done
 ok "el motor responde"
 
+# Esto es lo que habria cazado el fallo de los permisos: el motor puede responder
+# perfectamente mientras Asterisk no ha cargado ni un objeto de su configuracion.
+TRANSPORTES="$(docker exec asterisk asterisk -rx 'pjsip show transports' 2>/dev/null || true)"
+case "$TRANSPORTES" in
+  *"No objects found"*|"")
+    morir "Asterisk no ha cargado su configuracion PJSIP. Mira: docker logs asterisk | grep -i pjsip" ;;
+esac
+ok "Asterisk ha cargado la configuracion PJSIP"
+
+# Esto es lo que habria cazado el fallo de los permisos: el motor puede responder
+# perfectamente mientras Asterisk no ha cargado ni un objeto de su configuracion.
+TRANSPORTES="$(docker exec asterisk asterisk -rx 'pjsip show transports' 2>/dev/null || true)"
+case "$TRANSPORTES" in
+  *"No objects found"*|"") morir "Asterisk no ha cargado su configuracion PJSIP. Mira: docker logs asterisk | grep -i pjsip" ;;
+esac
+ok "Asterisk ha cargado la configuracion PJSIP"
+
 curl -fsS --max-time 5 -o /dev/null "https://$HOST/" -u "janus:$PASS" \
   && ok "el editor responde por HTTPS con la contraseña" \
   || aviso "HTTPS aún no responde; el certificado puede tardar un minuto"
@@ -206,6 +252,21 @@ if curl -fsS --max-time 5 -o /dev/null "https://$HOST/api/flow" 2>/dev/null; the
   morir "LA API RESPONDE SIN CONTRASEÑA. Revisa /etc/caddy/Caddyfile antes de usar esto"
 fi
 ok "sin contraseña no se pasa, ni a la API"
+
+# ── avisos ───────────────────────────────────────────────────────────────────
+# Las extensiones del laboratorio llevan su contraseña commiteada, y el
+# repositorio es publico. Hoy no son alcanzables —el 5060 solo acepta a Twilio—
+# pero en una caja de produccion no hay ningun softphone que registrar.
+if grep -q '^password=jaimeguapo' "$REPO/asterisk-config/etc/pjsip.conf" 2>/dev/null; then
+  printf '\n'
+  aviso "Las extensiones de laboratorio (jaime, ana) siguen con su contrasena"
+  aviso "   commiteada en un repositorio publico. Aqui no hay softphone que"
+  aviso "   registrar: borra esas dos secciones de asterisk-config/etc/pjsip.conf"
+fi
+if grep -q '^password=janus' "$REPO/asterisk-config/etc/ari.conf" 2>/dev/null; then
+  aviso "ARI sigue con la contrasena de laboratorio. Solo escucha en 127.0.0.1,"
+  aviso "   pero cambiala en asterisk-config/etc/ari.conf y en src/main.ts"
+fi
 
 printf '\n\033[1mListo.\033[0m\n\n'
 printf '  https://%s\n  usuario: janus\n  contrasena: %s\n\n' "$HOST" "$PASS"

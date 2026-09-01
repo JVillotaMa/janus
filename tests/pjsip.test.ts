@@ -188,3 +188,19 @@ test('todas las troncales los llevan, sea cual sea su modo', () => {
   ]);
   assert.equal(conf.match(/allow=ulaw/g)?.length, 2);
 });
+
+// El fichero generado esta fuera de git, asi que en un clon nuevo no existe
+// hasta que el motor arranca. Con `#include`, Asterisk aborta la carga ENTERA de
+// pjsip.conf cuando falta: se queda sin transportes, sin extensiones y sin nada,
+// y lo unico que se ve es `No objects found`. Pasó en un droplet recién montado.
+test('el fichero generado se incluye con #tryinclude, no con #include', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const conf = await readFile(
+    new URL('../asterisk-config/etc/pjsip.conf', import.meta.url),
+    'utf8',
+  );
+  const linea = conf.split('\n').find((l) => /^#\w*include\s+pjsip_janus\.conf/.test(l));
+
+  assert.ok(linea, 'pjsip.conf tiene que traer el fichero generado');
+  assert.match(linea!, /^#tryinclude/, 'con #include, un clon nuevo se queda sin PJSIP entero');
+});

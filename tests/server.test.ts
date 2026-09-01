@@ -98,6 +98,11 @@ async function api(store: Store = openStore(':memory:'), sounds = fakeSounds(), 
   const flowStore: FlowStore = { get: () => live, set: (nuevo) => { live = nuevo; } };
 
   const server = serveApi(flowStore, store, asterisk, sounds, 0, uiDir);
+  // `unref` para que un servidor sin cerrar no mantenga vivo el proceso. Sin
+  // esto, cualquier assert que reviente antes del `app.close()` deja el puerto
+  // escuchando y node no sale nunca: un test rojo se disfraza de suite colgada,
+  // y encontrar cuál era cuesta media hora.
+  server.unref();
   await once(server, 'listening');
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
@@ -477,5 +482,55 @@ test('ninguna forma de salirse del directorio sirve nada', async () => {
     const res = await app.get(ruta);
     assert.equal(res.status, 404, ruta);
   }
+  app.close();
+});
+
+// Validar el valor recortado y guardar el original es como se coló un
+// `contact=sip: host` con espacio: Asterisk rechaza el aor, el endpoint que lo
+// referencia se cae con él, y no queda ni un objeto cargado ni un error legible.
+test('un host con espacios alrededor se guarda ya recortado', async () => {
+  const app = await api();
+
+  const res = await app.put('/api/trunks', [
+    { name: '  twilio ', host: '  TK123.pstn.twilio.com  ', mode: 'identify', matchIp: ' 1.2.3.4 ' },
+  ]);
+  assert.equal(res.status, 200);
+
+  const [trunk] = app.store.trunks();
+  assert.equal(trunk!.host, 'TK123.pstn.twilio.com', 'sin espacios: acaba dentro de una URI');
+  assert.equal(trunk!.name, 'twilio');
+  app.close();
+});
+
+test('la lista de IPs pierde los espacios de detrás de las comas', async () => {
+  const app = await api();
+
+  await app.put('/api/trunks', [
+    { name: 'twilio', host: 'x.pstn.twilio.com', mode: 'identify',
+      matchIp: '54.172.60.0/30, 54.244.51.0/30' },
+  ]);
+  assert.equal(app.store.trunks()[0]!.matchIp, '54.172.60.0/30,54.244.51.0/30');
+  app.close();
+});
+
+test('un espacio EN MEDIO del host sigue siendo un error', async () => {
+  const app = await api();
+
+  const res = await app.put('/api/trunks', [
+    { name: 'x', host: 'sip. malo .es', mode: 'identify', matchIp: '1.2.3.4' },
+  ]);
+  assert.equal(res.status, 400);
+  app.close();
+});
+
+test('la contraseña conserva sus espacios: recortarla rompería una legítima', async () => {
+  const app = await api();
+
+  await app.put('/api/trunks', [
+    { name: 'x', host: 'sip.x.es', mode: 'register', username: ' u ', password: ' con espacios ' },
+  ]);
+  const [trunk] = app.store.trunks();
+  assert.equal(trunk!.username, 'u', 'el usuario sí se recorta');
+  assert.equal(trunk!.password, ' con espacios ', 'la contraseña no');
   app.close();
 });

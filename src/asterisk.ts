@@ -23,9 +23,14 @@ const GENERATED = 'pjsip_janus.conf';
 /**
  * Solo el dueño del fichero: lleva contraseñas SIP en claro.
  *
- * ponytail: en el laboratorio Asterisk corre como root y lo lee igual. Si algún
- * día corre como usuario `asterisk`, el fichero necesita un grupo compartido y
- * esto pasa a 0o640.
+ * **El modo solo se aplica al CREAR el fichero.** Node no lo reaplica al
+ * reescribir uno que ya existe, ni le cambia el dueño — y de eso depende que
+ * esto funcione con Asterisk corriendo como otro usuario: `install.sh` crea el
+ * fichero con el dueño correcto una vez, y estas escrituras lo respetan.
+ *
+ * Que esa pieza falte se diagnostica fatal: Asterisk reporta un fichero que no
+ * puede leer con el mismo mensaje que uno que no existe, así que el síntoma es
+ * «no encuentro el #include» y no «no tengo permisos». Pasó en el primer droplet.
  */
 const MODE = 0o600;
 
