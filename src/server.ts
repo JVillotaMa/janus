@@ -1,15 +1,21 @@
 /**
  * @fileoverview API HTTP: el flujo que edita el editor y las llamadas ya hechas.
  *
- * ponytail: SIETE rutas con node:http, y el techo anterior decía seis. Se pasó a
- * propósito con `/api/sounds`, que es un bloque calcado al de `/api/trunks` y no
- * usa nada de lo que un framework aporta: ni parámetros de ruta, ni middleware,
- * ni negociación de contenido. La octava sí obliga a migrar a Hono — o a admitir
- * que este comentario no es un techo y quitarlo.
+ * Aquí hubo un techo de rutas —«la siguiente obliga a migrar a Hono»— que se
+ * cruzó dos veces sin migrar. Retirado, porque la predicción estaba mal: las
+ * rutas resultaron homogéneas (una colección, `GET` y `PUT`) y ninguna ha pedido
+ * nada de lo que un framework aporta. Servir el editor no añadió un peldaño:
+ * sustituyó el `404` final.
+ *
+ * ponytail: lo que sí justificaría migrar es una necesidad de verdad —middleware
+ * de autenticación, rutas con parámetros, varios formatos de respuesta—, no la
+ * cuenta de `if`.
  */
 
+import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
-import type { IncomingMessage } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { extname, join, resolve, sep } from 'node:path';
 import type { FlowVersion, Store } from './store.ts';
 import type { Trunk,Flow } from './types.ts';
 import { renderPjsip } from './pjsip.ts';
@@ -31,6 +37,56 @@ import type { Issue } from './validate.ts';
  * toca token de verdad, no un filtro.
  */
 const HOST = '127.0.0.1';
+
+/** Dónde deja `vite build` el editor. Si no existe, no se sirve nada. */
+const UI = new URL('../ui/dist', import.meta.url).pathname;
+
+const CONTENT_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.json': 'application/json; charset=utf-8',
+  '.woff2': 'font/woff2',
+};
+
+/**
+ * Sirve un fichero del editor construido.
+ *
+ * La ruta llega de fuera y acaba siendo un fichero en disco. Lo que de verdad
+ * impide salirse son dos cosas que ya pasan antes de llegar aquí: `new URL()`
+ * normaliza los `..` en el propio Node, y el `pathname` **no se decodifica**, así
+ * que un `%2e%2e` se queda como nombre literal.
+ *
+ * La comprobación de contención es la red debajo de esas dos, y con ellas en pie
+ * es inalcanzable: ningún test la ejecuta, y quitarla no pone ninguno en rojo.
+ * Se queda igual, porque el día que alguien decodifique el pathname o cambie cómo
+ * se construye la URL, es lo único que quedaría en pie. No se poda una medida de
+ * seguridad porque hoy le sobre la suerte.
+ *
+ * Y no se busca `..` a mano: de eso se escapa de mil formas. Tampoco se acota el
+ * nombre a un alfabeto como con los audios, porque los nombres los pone Vite
+ * (`index-D4dnGvPY.js`).
+ *
+ * @returns `false` si no hay nada que servir, para que el llamante dé el 404.
+ */
+function serveUi(dir: string, pathname: string, res: ServerResponse): boolean {
+  const file = resolve(join(dir, pathname === '/' ? 'index.html' : pathname));
+  if (!file.startsWith(dir + sep)) return false;
+
+  try {
+    if (!statSync(file).isFile()) return false;
+  } catch {
+    return false;
+  }
+
+  res.writeHead(200, {
+    'content-type': CONTENT_TYPES[extname(file)] ?? 'application/octet-stream',
+  });
+  createReadStream(file).pipe(res);
+  return true;
+}
 
 /**
  * Lee y reemplaza el flujo vivo del motor.
@@ -75,6 +131,7 @@ export function serveApi(
   asterisk: Provisioner,
   sounds: Sounds,
   port = 3000,
+  uiDir = UI,
 ) {
   return createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -200,10 +257,17 @@ export function serveApi(
       return void res.writeHead(405).end();
     }
 
+    // Lo que no es de la API es del editor, si está construido. Sin `ui/dist` esto
+    // no encuentra nada y se cae al 404 de siempre, que es lo que mantiene intacto
+    // el flujo de desarrollo con Vite en otra máquina: la presencia del build es
+    // la señal, sin variable de entorno ni modo que recordar.
+    //
     // Responder sin haber leído el cuerpo no corta la subida: `node:http` vacía
-    // solo lo que quede por llegar cuando la respuesta termina. Comprobado con
-    // un cuerpo de un mega. No hace falta drenarlo a mano.
-    if (url.pathname !== '/api/flow') return void res.writeHead(404).end();
+    // solo lo que quede por llegar cuando la respuesta termina.
+    if (url.pathname !== '/api/flow') {
+      if (req.method === 'GET' && serveUi(uiDir, url.pathname, res)) return;
+      return void res.writeHead(404).end();
+    }
 
     // El grafo pelado, como siempre: quién es la versión viva se sabe por
     // `/api/flows`, y así el editor no se entera de este cambio.

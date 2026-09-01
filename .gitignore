@@ -3,6 +3,7 @@ node_modules/
 *.db-wal
 *.db-shm
 dist/
+ui/dist/
 .env
 
 # Config de Asterisk: va versionada, menos lo que genera el motor.

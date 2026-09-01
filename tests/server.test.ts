@@ -7,6 +7,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { serveApi } from '../src/server.ts';
 import type { FlowStore } from '../src/server.ts';
@@ -14,6 +17,19 @@ import { openStore } from '../src/store.ts';
 import type { FlowVersion, Store } from '../src/store.ts';
 import type { Sound } from '../src/sounds.ts';
 import type { Flow } from '../src/types.ts';
+
+/** Un directorio de editor construido, con lo que produce `vite build`. */
+function conBuild(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'janus-ui-'));
+  mkdirSync(join(dir, 'assets'));
+  writeFileSync(join(dir, 'index.html'), '<!doctype html><title>Janus</title><div id="root"></div>');
+  writeFileSync(join(dir, 'assets', 'index-abc123.js'), 'console.log("editor")');
+  writeFileSync(join(dir, 'assets', 'index-abc123.css'), ':root{--x:1}');
+  return dir;
+}
+
+/** Un directorio que no existe: es lo que hay mientras se desarrolla con Vite aparte. */
+const SIN_BUILD = join(tmpdir(), 'janus-sin-build-no-existe');
 
 const flow = (start: string): Flow => ({
   start,
@@ -77,11 +93,11 @@ const body = async (res: Response): Promise<any> => res.json();
  * `live` es el flujo vivo, atado igual que en `main.ts`: una variable que el
  * PUT reemplaza. Los tests miran ahí para comprobar qué está sirviendo el motor.
  */
-async function api(store: Store = openStore(':memory:'), sounds = fakeSounds()) {
+async function api(store: Store = openStore(':memory:'), sounds = fakeSounds(), uiDir = SIN_BUILD) {
   let live: FlowVersion = store.publish(flow('uno'));
   const flowStore: FlowStore = { get: () => live, set: (nuevo) => { live = nuevo; } };
 
-  const server = serveApi(flowStore, store, asterisk, sounds, 0);
+  const server = serveApi(flowStore, store, asterisk, sounds, 0, uiDir);
   await once(server, 'listening');
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
@@ -379,6 +395,87 @@ test('los hosts normales siguen pasando', async () => {
   for (const host of ['sip.masmovil.es', 'sip.rtc.elevenlabs.io:5060', '212.0.0.5', '212.0.0.5:5060']) {
     const res = await app.put('/api/trunks', [{ name: 'x', host, mode: 'identify', matchIp: '1.2.3.4' }]);
     assert.equal(res.status, 200, host);
+  }
+  app.close();
+});
+
+// ─── El editor servido por el motor ──────────────────────────────────────────
+
+test('con el editor construido, la raíz lo devuelve', async () => {
+  const app = await api(openStore(':memory:'), fakeSounds(), conBuild());
+
+  const res = await app.get('/');
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type')!, /text\/html/);
+  assert.match(await res.text(), /<div id="root">/);
+  app.close();
+});
+
+test('cada recurso sale con su tipo de contenido', async () => {
+  const app = await api(openStore(':memory:'), fakeSounds(), conBuild());
+
+  const js = await app.get('/assets/index-abc123.js');
+  assert.match(js.headers.get('content-type')!, /text\/javascript/);
+  const css = await app.get('/assets/index-abc123.css');
+  assert.match(css.headers.get('content-type')!, /text\/css/);
+  app.close();
+});
+
+// La presencia del build es la señal: sin él, todo se comporta como antes y el
+// servidor de desarrollo con su proxy sigue funcionando sin tocar nada.
+test('sin editor construido, el motor responde como siempre', async () => {
+  const app = await api();
+
+  assert.equal((await app.get('/')).status, 404);
+  assert.equal((await app.get('/assets/lo-que-sea.js')).status, 404);
+  assert.equal((await app.get('/api/flow')).status, 200, 'la API no se entera');
+  app.close();
+});
+
+test('la API gana al fichero estático', async () => {
+  const app = await api(openStore(':memory:'), fakeSounds(), conBuild());
+
+  const res = await app.get('/api/flow');
+  assert.match(res.headers.get('content-type')!, /application\/json/);
+  assert.equal((await body(res)).start, 'uno');
+  app.close();
+});
+
+test('un fichero que no está en el build es un 404', async () => {
+  const app = await api(openStore(':memory:'), fakeSounds(), conBuild());
+  assert.equal((await app.get('/assets/no-existe.js')).status, 404);
+  app.close();
+});
+
+test('un directorio no se sirve', async () => {
+  const app = await api(openStore(':memory:'), fakeSounds(), conBuild());
+  assert.equal((await app.get('/assets')).status, 404);
+  app.close();
+});
+
+test('solo el GET sirve ficheros', async () => {
+  const app = await api(openStore(':memory:'), fakeSounds(), conBuild());
+  assert.equal((await app.putRaw('/', Buffer.from('x'))).status, 404);
+  app.close();
+});
+
+// Comprobado que ninguna de estas sirve un fichero. Lo que las para es que
+// `new URL()` normaliza los `..` y que el pathname no se decodifica; la
+// comprobación de contención de `serveUi` es la red de debajo y este test NO la
+// ejecuta — quitarla no pone esto en rojo. Se deja escrito para que nadie crea
+// que este test la respalda.
+test('ninguna forma de salirse del directorio sirve nada', async () => {
+  const app = await api(openStore(':memory:'), fakeSounds(), conBuild());
+
+  for (const ruta of [
+    '/../../etc/passwd',
+    '/%2e%2e%2f%2e%2e%2fetc%2fpasswd',
+    '/..%2f..%2fetc%2fpasswd',
+    '/assets/../../../etc/passwd',
+    '/....//....//etc/passwd',
+  ]) {
+    const res = await app.get(ruta);
+    assert.equal(res.status, 404, ruta);
   }
   app.close();
 });

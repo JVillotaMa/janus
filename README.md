@@ -172,10 +172,11 @@ Y marcas `100` desde un softphone registrado como `jaime`.
 | Comando | Qué hace |
 |---|---|
 | `pnpm start` | El motor: conecta con ARI, configura las troncales y sirve la API en :3000 |
-| `pnpm test` | Los 308 tests: 248 puros con `node --test` y 60 de la UI con jsdom. No necesitan Asterisk ni red |
+| `pnpm test` | Los 316 tests: 256 puros con `node --test` y 60 de la UI con jsdom. No necesitan Asterisk ni red |
 | `pnpm typecheck` | `tsc --noEmit`. No compila, solo comprueba |
 | `pnpm calls` | Las últimas llamadas con su traza. `pnpm calls 50` para más |
-| `cd ui && npm run dev` | El editor de flujos en :5173 |
+| `cd ui && npm run dev` | El editor en :5173, contra el motor de :3000 |
+| `npm --prefix ui run build` | El editor a `ui/dist`, y entonces el motor lo sirve en :3000 |
 
 Para el motor, `node --watch src/main.ts` recarga al guardar. Ojo: **el código
 no se recarga solo, el flujo sí** — un `PUT /api/flow` desde el editor cambia el
@@ -216,7 +217,7 @@ curl -X PUT --data-binary @saludo.mp3 \
 src/            el motor (TypeScript, sin build)
 flow.json       la semilla de una base vacía. El grafo vive en la BBDD
 janus.db        flujos, troncales y trazas (SQLite). Fuera del repo
-tests/          248 tests deterministas del motor
+tests/          256 tests deterministas del motor
 ui/             el editor (React Flow + Vite), con 49 tests puros y 60 con jsdom
 asterisk-config/etc     config de Asterisk, montada en el contenedor. En el repo
 asterisk-config/sounds  los audios. Fuera del repo: pesan y se regeneran

@@ -155,7 +155,7 @@ src/
   calls.ts       script: imprime las ultimas llamadas
   main.ts        entrypoint: conecta ARI y ata las piezas
 flow.json        SOLO la semilla de una base vacia. El grafo vive en la BBDD
-tests/           248 tests, deterministas, sin Asterisk   -> pnpm test
+tests/           256 tests, deterministas, sin Asterisk   -> pnpm test
   fake-channel.ts    dobles de canal, bridge y cliente ARI
   interpreter.test.ts  bucle, aristas, horario, cancelacion, nodo entry
   nodes.test.ts        say / gather / hangup, con timers simulados
@@ -273,11 +273,29 @@ GET     /api/sounds         los audios subidos
 PUT     /api/sounds/<nombre>  sube uno, con el fichero en el CUERPO CRUDO
 ```
 
-El comentario `ponytail:` de `server.ts` decia que la sexta era el techo y que la
-septima obligaba a migrar a Hono. **Se paso a proposito**: `/api/sounds` es un
-bloque calcado al de `/api/trunks` y no usa nada de lo que un framework aporta.
-El comentario dice ahora que la octava si — o que hay que admitir que no es un
-techo y quitarlo.
+**El techo de rutas se ha retirado, y es una decision, no un descuido.** Decia
+«la siguiente obliga a migrar a Hono» y se cruzo dos veces sin migrar, asi que la
+prediccion estaba mal: las rutas resultaron homogeneas —una coleccion, `GET` y
+`PUT`— y ninguna ha pedido middleware, parametros de ruta ni negociacion de
+contenido. Lo que si justificaria migrar es una necesidad de verdad, no la cuenta
+de `if`.
+
+**El motor sirve el editor construido.** Lo que era el `404` final ahora sirve
+`ui/dist` si existe; sin build se comporta igual que antes, asi que Vite en otra
+maquina con su proxy sigue funcionando sin tocar nada. La presencia del build es
+la senal, sin variable de entorno.
+
+Se sirve desde el motor y no desde Vite en otra maquina **porque la UI importa
+`src/schema.ts` y `src/endpoint.ts` del arbol donde corre**: construida en otro
+sitio ofreceria un vocabulario distinto del que el motor valida, y gana el motor.
+Construir donde se ejecuta hace imposible esa divergencia. Por eso `ui/dist` esta
+fuera de git: commitearlo la reintroduce.
+
+**La contencion al servir ficheros es red de seguridad inalcanzable, y se queda.**
+Lo que de verdad impide salirse del directorio es que `new URL()` normaliza los
+`..` y que el `pathname` no se decodifica. La comprobacion de `serveUi` esta
+debajo de las dos: ningun test la ejecuta y quitarla no pone nada en rojo. No se
+poda una medida de seguridad porque hoy le sobre la suerte.
 
 **Nada de multipart para subir.** El fichero va en el cuerpo del PUT y el nombre
 en la URL: no hay mas campos que mandar, asi que un multipart solo anadiria un
