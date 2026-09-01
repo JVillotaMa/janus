@@ -85,7 +85,10 @@ test('el dialplan del repo entrega a Stasis con el número marcado', async () =>
   );
   const context = conf.slice(conf.indexOf(`[${CONTEXT}]`)).split(/\n\[/)[0]!;
 
-  assert.match(context, /exten => _X\.,1,Answer\(\)/);
+  // El patron tiene que aceptar el `+` de E.164: Twilio entrega
+  // `+15722192507`, y con `_X.` —donde X es UN DIGITO— no casa nada y Asterisk
+  // contesta 404 Not Found sin que se vea por que.
+  assert.match(context, /exten => _\[\+0-9\]\.,1,Answer\(\)/);
   assert.match(context, /Stasis\(janus,\$\{EXTEN\}\)/);
   // Tres líneas de dialplan y ni una más: es el invariante.
   assert.equal(context.split('\n').filter((line) => /^\s*(exten|same)/.test(line)).length, 3);
